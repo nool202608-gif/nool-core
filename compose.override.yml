@@ -1,0 +1,9 @@
+# Local-development-only overrides, auto-loaded by `docker compose` alongside
+# compose.yml (no extra flag needed). Not used in production - it only adds
+# host ports for direct debugging/DB-client access that production must not
+# expose. Delete or ignore this file for a production-shaped deploy.
+
+services:
+  postgres:
+    ports:
+      - "${POSTGRES_PORT_HOST:-5433}:5432"
