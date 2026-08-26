@@ -20,7 +20,7 @@ def test_get_current_user_rejects_invalid_token(_core_env, monkeypatch):
     def fake_verify(token: str):
         raise UnauthorizedError("Invalid or expired authentication token.")
 
-    monkeypatch.setattr("src.api.deps.verify_id_token", fake_verify)
+    monkeypatch.setattr("src.api.deps.verify_token", fake_verify)
 
     with pytest.raises(UnauthorizedError):
         get_current_user(authorization="Bearer bad-token")
@@ -31,7 +31,7 @@ def test_get_current_user_returns_user_for_valid_token(_core_env, monkeypatch):
         assert token == "good-token"
         return AuthenticatedUser(uid="uid-1", email="teacher@example.com", claims={})
 
-    monkeypatch.setattr("src.api.deps.verify_id_token", fake_verify)
+    monkeypatch.setattr("src.api.deps.verify_token", fake_verify)
 
     user = get_current_user(authorization="Bearer good-token")
 

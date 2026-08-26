@@ -7,3 +7,22 @@ services:
   postgres:
     ports:
       - "${POSTGRES_PORT_HOST:-5433}:5432"
+
+  jaeger:
+    ports:
+      # Trace UI - http://localhost:16686
+      - "${JAEGER_UI_PORT_HOST:-16686}:16686"
+
+  auth:
+    ports:
+      # Direct access, bypassing NGINX - e.g. http://localhost:8001/docs
+      # for the OpenAPI/Swagger UI. Same app the NGINX /auth/ route
+      # forwards to; both work.
+      - "${AUTH_PORT_HOST:-8001}:8000"
+
+  core:
+    ports:
+      # Direct access, bypassing NGINX - e.g. http://localhost:8002/docs
+      # for the OpenAPI/Swagger UI. Same app the NGINX /api/ route
+      # forwards to; both work.
+      - "${CORE_PORT_HOST:-8002}:8000"

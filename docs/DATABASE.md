@@ -37,8 +37,11 @@ swapping in a managed instance is just a config change.
 ## Migrations
 
 Alembic migration tooling lives in `database/` - see `database/README.md`
-for the full workflow. No product schema exists yet (see `CLAUDE.md`'s
-"Current Goal"); migrations will be added as Core's domain models land.
+for the full workflow. The full product schema (see `CLAUDE.md`'s "Current
+Goal") is defined as SQLAlchemy ORM models under
+`services/core/src/domain/models/` - `database/migrations/env.py` points
+Alembic's `target_metadata` at those models' `Base.metadata`, so
+`alembic revision --autogenerate` picks up schema changes automatically.
 
 ## Identity model
 
@@ -50,5 +53,6 @@ internal ID and store the Firebase UID as an external reference:
 Firebase UID -> nool User (id, firebase_uid, role, school_id, profile)
 ```
 
-This table does not exist yet - it will be introduced via a migration once
-Core's user domain is implemented.
+Implemented as the `users` table (`services/core/src/domain/models/foundation.py`)
+- `firebase_uid` is nullable-until-first-login, since School Admin can
+invite a teacher/student by email before they've ever signed in.

@@ -3,7 +3,6 @@ from fastapi import Header
 from shared.auth import AuthenticatedUser
 from shared.errors import UnauthorizedError
 
-from src.config.settings import get_settings
 from src.services.token_service import TokenService
 
 
@@ -19,4 +18,4 @@ def _extract_bearer_token(authorization: str | None) -> str:
 def get_current_user(authorization: str | None = Header(default=None)) -> AuthenticatedUser:
     """FastAPI dependency: extracts and verifies the caller's Firebase ID token."""
     token = _extract_bearer_token(authorization)
-    return TokenService(get_settings()).verify(token)
+    return TokenService().verify(token)

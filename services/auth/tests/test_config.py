@@ -4,6 +4,7 @@ from src.config.settings import AuthSettings
 def test_settings_defaults(monkeypatch):
     monkeypatch.delenv("FIREBASE_PROJECT_ID", raising=False)
     monkeypatch.delenv("FIREBASE_CREDENTIALS_PATH", raising=False)
+    monkeypatch.delenv("FIREBASE_WEB_API_KEY", raising=False)
 
     settings = AuthSettings()
 
@@ -11,6 +12,7 @@ def test_settings_defaults(monkeypatch):
     assert settings.environment == "development"
     assert settings.firebase_project_id is None
     assert settings.firebase_credentials_path is None
+    assert settings.firebase_web_api_key is None
 
 
 def test_settings_read_from_environment(monkeypatch):

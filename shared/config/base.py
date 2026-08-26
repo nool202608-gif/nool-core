@@ -15,3 +15,7 @@ class BaseServiceSettings(BaseSettings):
     log_level: str = "INFO"
     host: str = "0.0.0.0"
     port: int = 8000
+    # OTLP HTTP traces endpoint (e.g. http://jaeger:4318/v1/traces) - see
+    # shared/tracing/setup.py. Unset by default: tracing is optional and a
+    # service must boot cleanly without a collector available.
+    otel_exporter_otlp_endpoint: str | None = None

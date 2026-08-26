@@ -20,6 +20,22 @@ services:
     networks:
       - nool_network
 
+  jaeger:
+    image: jaegertracing/all-in-one:1.76.0
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    healthcheck:
+      # Jaeger's admin port (14269) has a dedicated health endpoint -
+      # separate from the UI (16686) and the OTLP receiver (4318).
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:14269/ || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - nool_network
+
   auth:
     build:
       context: .
@@ -30,7 +46,25 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
-      FIREBASE_CREDENTIALS_PATH: ${FIREBASE_CREDENTIALS_PATH:-}
+      # Fixed in-container path - see the volume mount below. The
+      # host-side filename is whatever you actually have; only
+      # FIREBASE_CREDENTIALS_HOST_PATH in .env needs to point at it.
+      FIREBASE_CREDENTIALS_PATH: /app/secrets/firebase-service-account.json
+      # Web API key - same value every frontend already ships as
+      # NEXT_PUBLIC_FIREBASE_API_KEY (public by design). Needed here now
+      # that POST /api/v1/login checks the password server-side instead
+      # of the client calling Firebase directly.
+      FIREBASE_WEB_API_KEY: ${FIREBASE_WEB_API_KEY:-}
+      # OTLP HTTP traces endpoint - see shared/tracing/setup.py. Internal
+      # Docker-network address; never routed through NGINX.
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318/v1/traces
+    volumes:
+      # Read-only Admin SDK service account - see services/auth/README.md.
+      # Never commit the target file; ./secrets/ is gitignored.
+      - ${FIREBASE_CREDENTIALS_HOST_PATH:-./secrets/firebase-service-account.json}:/app/secrets/firebase-service-account.json:ro
+    depends_on:
+      jaeger:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
@@ -55,9 +89,22 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       FIREBASE_PROJECT_ID: ${FIREBASE_PROJECT_ID:-}
-      FIREBASE_CREDENTIALS_PATH: ${FIREBASE_CREDENTIALS_PATH:-}
+      FIREBASE_CREDENTIALS_PATH: /app/secrets/firebase-service-account.json
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318/v1/traces
+    volumes:
+      - ${FIREBASE_CREDENTIALS_HOST_PATH:-./secrets/firebase-service-account.json}:/app/secrets/firebase-service-account.json:ro
+      # database/migrations is otherwise only COPY'd into the image at
+      # build time - a migration generated via `./scripts/migrate.sh
+      # revision --autogenerate` (which execs into this running
+      # container) would only exist in that container's writable layer
+      # and vanish on the next rebuild/recreate, never reaching the host
+      # to be committed. Bind-mounting it makes generated migration files
+      # land on the host immediately, like any other generated artifact.
+      - ./database/migrations:/app/database/migrations
     depends_on:
       postgres:
+        condition: service_healthy
+      jaeger:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -82,7 +129,10 @@ services:
       core:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      # 127.0.0.1, not localhost: nginx only listens on IPv4 here, but
+      # localhost resolves to ::1 first in-container, which wget then
+      # fails to connect to and reports as a false-negative failure.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
       interval: 10s
       timeout: 3s
       retries: 5

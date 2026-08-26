@@ -19,7 +19,7 @@ def test_me_rejects_invalid_token(client, monkeypatch):
     def fake_verify(token: str):
         raise UnauthorizedError("Invalid or expired authentication token.")
 
-    monkeypatch.setattr("src.services.token_service.verify_id_token", fake_verify)
+    monkeypatch.setattr("src.services.token_service.verify_token", fake_verify)
 
     response = client.get("/api/v1/me", headers={"Authorization": "Bearer bad-token"})
 
@@ -32,9 +32,26 @@ def test_me_returns_user_for_valid_token(client, monkeypatch):
         assert token == "good-token"
         return AuthenticatedUser(uid="uid-123", email="student@example.com", claims={})
 
-    monkeypatch.setattr("src.services.token_service.verify_id_token", fake_verify)
+    monkeypatch.setattr("src.services.token_service.verify_token", fake_verify)
 
     response = client.get("/api/v1/me", headers={"Authorization": "Bearer good-token"})
 
     assert response.status_code == 200
-    assert response.json() == {"uid": "uid-123", "email": "student@example.com"}
+    assert response.json() == {"uid": "uid-123", "email": "student@example.com", "role": None}
+
+
+def test_me_returns_role_when_the_account_has_one(client, monkeypatch):
+    def fake_verify(token: str):
+        return AuthenticatedUser(
+            uid="uid-456",
+            email="teacher@example.com",
+            claims={"role": "TEACHER"},
+            role="TEACHER",
+        )
+
+    monkeypatch.setattr("src.services.token_service.verify_token", fake_verify)
+
+    response = client.get("/api/v1/me", headers={"Authorization": "Bearer good-token"})
+
+    assert response.status_code == 200
+    assert response.json()["role"] == "TEACHER"

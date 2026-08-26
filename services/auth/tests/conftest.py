@@ -1,14 +1,14 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from shared.auth import reset_firebase_state
+from shared.auth import reset_identity_provider
 
 
 @pytest.fixture(autouse=True)
-def _reset_firebase():
-    reset_firebase_state()
+def _reset_identity_provider():
+    reset_identity_provider()
     yield
-    reset_firebase_state()
+    reset_identity_provider()
 
 
 @pytest.fixture

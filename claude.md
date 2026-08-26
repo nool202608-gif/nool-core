@@ -22,53 +22,31 @@ nool-app and admin web apps are separate repositories.
 
 Current Goal
 
-Establish the backend foundation only.
+Phase 1 (backend foundation) is done: repository structure, Docker infrastructure, Auth/Core skeletons, NGINX, PostgreSQL, health/readiness, configuration, logging/error handling, testing foundation.
 
-Implement:
+Phase 2: build the full product API in Core, against the contract already defined by nool-app's `spec/docs/api-reference.html` (and the `services/domain/`/`types/domain/` TypeScript it's generated from, which is the actual source of truth).
 
-Repository structure
+Implement, for every resource group in that contract:
 
-Docker infrastructure
+Schools, Teachers, Students, Classes, Curriculum (Subjects/Chapters/Topics), Datasets
 
-Auth service skeleton
+Voice Tests, Test Results
 
-Core API skeleton
+Homework, Retest Progress, Improvement
 
-NGINX
+Question Papers
 
-PostgreSQL development container
+Teacher Dashboard, Assistant
 
-Database/migration foundation
+Student Dashboard, Assigned Tests, AI Assessor sessions, Homework/Retest/Progress/Leaderboard (student-facing)
 
-Health/readiness endpoints
+Super Admin (schools, plans, subscriptions, platform analytics, School Admin management)
 
-Configuration
+School Admin (teacher/student roster, classes, school curriculum, school analytics/subscription)
 
-Logging/error handling
+notifications remain out of scope until a real feature needs them.
 
-Testing foundation
-
-Do NOT implement business workflows yet:
-
-Test
-
-Homework
-
-Retest
-
-Improvement
-
-Question Paper
-
-AI Assessor
-
-Question Generator
-
-subscriptions
-
-analytics
-
-notifications
+AI-backed content (Homework/Question Paper question generation, the AI Assessor's realtime voice conversation) is implemented behind a pluggable content-generation interface — mirroring `shared/auth`'s `IdentityProvider` seam — with one deterministic placeholder implementation. There is no real LLM/STT/TTS vendor integrated anywhere in this repo; building one is separate, future work that only touches that one interface's implementation.
 
 Repository Structure
 
@@ -328,27 +306,9 @@ Subscriptions
 
 Analytics
 
-For now implement only:
+Foundation (done): startup, configuration, health, readiness, request ID, error handling, logging, database connectivity, migration support, authentication middleware foundation.
 
-startup
-
-configuration
-
-health
-
-readiness
-
-request ID
-
-error handling
-
-logging
-
-database connectivity
-
-migration support
-
-authentication middleware foundation
+Now build the product schema and API on top of that foundation — see "Current Goal" above for the full resource list.
 
 Database
 
@@ -366,7 +326,7 @@ readiness check
 
 transaction support
 
-Do not create the complete product schema yet.
+The full product schema (see "Current Goal") is now in scope. snake_case table and column names throughout. Migrations via Alembic (`database/`), run with `./scripts/migrate.sh`.
 
 Identity
 

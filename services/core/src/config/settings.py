@@ -13,6 +13,15 @@ class CoreSettings(BaseServiceSettings):
     firebase_project_id: str | None = None
     firebase_credentials_path: str | None = None
 
+    # Blank-safe for local dev, same as the Firebase settings above - see
+    # src/services/email.py. Only needed for School Admin's "send
+    # credentials by email" action; nothing else in this service sends mail.
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    smtp_from_email: str | None = None
+
     @property
     def database_url(self) -> str:
         """Async SQLAlchemy connection string.

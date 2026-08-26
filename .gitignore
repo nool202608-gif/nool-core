@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Firebase Admin SDK service account credentials - never commit these.
+/secrets/

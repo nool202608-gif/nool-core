@@ -36,21 +36,38 @@ curl http://localhost:8080/api/ready
 
 Auth, Core, and PostgreSQL are not published to the host in `compose.yml`
 (production-shaped) - only NGINX is. `compose.override.yml` is auto-loaded
-alongside it for local dev and additionally publishes PostgreSQL on
-`localhost:5433` (override with `POSTGRES_PORT_HOST`) so you can point a GUI
-client (TablePlus, DBeaver, pgAdmin, ...) or `psql` directly at it:
+alongside it for local dev and additionally publishes:
 
-```
-Host:     localhost
-Port:     5433
-User:     <POSTGRES_USER from .env>
-Password: <POSTGRES_PASSWORD from .env>
-Database: <POSTGRES_DB from .env>
-```
+- PostgreSQL on `localhost:5433` (override with `POSTGRES_PORT_HOST`) so you
+  can point a GUI client (TablePlus, DBeaver, pgAdmin, ...) or `psql`
+  directly at it:
 
-```bash
-psql "postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@localhost:5433/$POSTGRES_DB"
-```
+  ```
+  Host:     localhost
+  Port:     5433
+  User:     <POSTGRES_USER from .env>
+  Password: <POSTGRES_PASSWORD from .env>
+  Database: <POSTGRES_DB from .env>
+  ```
+
+  ```bash
+  psql "postgresql://$POSTGRES_USER:$POSTGRES_PASSWORD@localhost:5433/$POSTGRES_DB"
+  ```
+
+- Auth on `localhost:8001` and Core on `localhost:8002` (override with
+  `AUTH_PORT_HOST`/`CORE_PORT_HOST`), each the exact same app NGINX proxies
+  to - useful for hitting a service directly, or for its OpenAPI/Swagger UI:
+
+  ```
+  http://localhost:8001/docs        # Auth - interactive Swagger UI
+  http://localhost:8001/openapi.json
+  http://localhost:8002/docs        # Core - interactive Swagger UI
+  http://localhost:8002/openapi.json
+  ```
+
+  The same docs are also reachable through NGINX, at
+  `http://localhost:8080/auth/docs` and `http://localhost:8080/api/docs` -
+  both routes hit the same FastAPI app, so pick whichever is convenient.
 
 Delete or ignore `compose.override.yml` for a production-shaped deploy -
 services stay internal-only without it.

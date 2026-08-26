@@ -2,6 +2,7 @@
 
 from .exceptions import (
     AppError,
+    ConflictError,
     ForbiddenError,
     NotFoundError,
     UnauthorizedError,
@@ -11,6 +12,7 @@ from .handlers import register_exception_handlers
 
 __all__ = [
     "AppError",
+    "ConflictError",
     "ForbiddenError",
     "NotFoundError",
     "UnauthorizedError",

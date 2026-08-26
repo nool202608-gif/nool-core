@@ -32,9 +32,14 @@ def get_database_url() -> str:
 
 config.set_main_option("sqlalchemy.url", get_database_url())
 
-# No product schema yet - see CLAUDE.md's "Current Goal". Models will be
-# wired in here once they exist, to enable autogenerate.
-target_metadata = None
+# Importing src.domain.models registers every ORM model on Base.metadata
+# (see that package's __init__.py) - this is the only import needed to
+# enable autogenerate. Only resolvable inside the core container / with
+# PYTHONPATH set to the repo root, same as the app itself (see
+# services/core/Dockerfile's PYTHONPATH=/app).
+from src.domain.models import Base  # noqa: E402
+
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:

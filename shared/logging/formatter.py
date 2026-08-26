@@ -2,9 +2,11 @@ import json
 import logging
 from datetime import datetime, timezone
 
+from opentelemetry import trace
+
 from .context import get_request_id
 
-_EXTRA_FIELDS = ("route", "method", "status", "duration_ms")
+_EXTRA_FIELDS = ("route", "method", "status", "duration_ms", "reason", "error", "event", "uid")
 
 
 class JSONFormatter(logging.Formatter):
@@ -28,6 +30,15 @@ class JSONFormatter(logging.Formatter):
         request_id = get_request_id()
         if request_id:
             payload["request_id"] = request_id
+
+        # Correlates this log line with its distributed trace (see
+        # shared/tracing/) - a no-op, always-valid call even when tracing
+        # isn't configured (get_current_span() then returns an invalid
+        # span, which the is_valid check below simply skips).
+        span_context = trace.get_current_span().get_span_context()
+        if span_context.is_valid:
+            payload["trace_id"] = format(span_context.trace_id, "032x")
+            payload["span_id"] = format(span_context.span_id, "016x")
 
         for field in _EXTRA_FIELDS:
             value = getattr(record, field, None)
