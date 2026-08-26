@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from src.domain.models import (
+    BloomLevel,
     HomeworkStatus,
     QuestionPaperStatus,
     TestStatus,
@@ -76,6 +77,29 @@ class SchoolLeaderboardEntryOut(CamelModel):
     rank: int
 
 
+class SchoolQuestionBankEntryOut(CamelModel):
+    """One previously-generated question, pulled from wherever it was
+    actually generated (a Question Paper or a Homework set) - there's no
+    separate "question bank" table; this is a read-time aggregation over
+    QuestionPaperQuestion and HomeworkQuestion so nothing already
+    generated at this school is ever re-typed from scratch. topic_label
+    is the best topic-shaped label available for that source: the paper's
+    linked Topics (falling back to its Subject) for Question Paper
+    questions, or the Homework's own gap_topic for Homework questions -
+    neither table tracks a topic on the individual question row itself.
+    """
+
+    id: str
+    text: str
+    answer: str | None
+    bloom_level: BloomLevel
+    subject_name: str
+    topic_label: str
+    source: str
+    source_name: str
+    created_at: datetime | None
+
+
 class SchoolAuditLogEntryOut(CamelModel):
     """School-scoped counterpart to Super Admin's GET /admin/audit-log -
     only entries whose actor belongs to this caller's own school (an
@@ -88,4 +112,5 @@ class SchoolAuditLogEntryOut(CamelModel):
     action: str
     target_type: str
     target_id: str
+    detail: str | None
     created_at: datetime

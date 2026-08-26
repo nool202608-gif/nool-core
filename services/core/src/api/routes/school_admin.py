@@ -1,6 +1,6 @@
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import Response
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from shared.errors import ConflictError, NotFoundError
 
 from src.api.deps import get_db_session, require_role
+from src.config.settings import get_settings
 from src.api.schemas.bloom import BloomDistributionOut, BloomScore, UpdateBloomDistributionIn
 from src.api.schemas.common import ListEnvelope
 from src.api.schemas.school_admin import (
@@ -17,6 +18,7 @@ from src.api.schemas.school_admin import (
     BulkRowResultOut,
     ClassAssignmentOut,
     ClassBreakdownOut,
+    MasteryTrendPointOut,
     CreateClassIn,
     CreateSchoolSubjectIn,
     CreateStudentIn,
@@ -44,9 +46,12 @@ from src.api.schemas.school_admin import (
     UpdateStudentIn,
     UpdateTeacherIn,
     UpdateTeacherStatusIn,
+    UpgradeRequestIn,
+    UpgradeRequestOut,
 )
 from src.domain.models import (
     AssistantMessage,
+    AuditLog,
     BloomLevel,
     Dataset,
     Homework,
@@ -86,6 +91,10 @@ from src.services.email import send_email
 from src.services.user_provisioning import create_firebase_user, reset_password
 
 router = APIRouter(prefix="/api/v1/school", tags=["school-admin"])
+
+# See request_subscription_upgrade's docstring for why this is enforced
+# against the audit log rather than a dedicated table or in-memory state.
+UPGRADE_REQUEST_COOLDOWN = timedelta(hours=1)
 
 # Kept as thin aliases (rather than a mass rename across this file) - the
 # actual counting logic now lives in usage_repository, shared with
@@ -160,7 +169,8 @@ async def invite_teacher(
     session.add(teacher)
     await session.flush()
     await audit_repository.record(
-        session, actor_id=user.id, action="teacher.invited", target_type="user", target_id=str(teacher.id)
+        session, actor_id=user.id, action="teacher.invited", target_type="user", target_id=str(teacher.id),
+        detail=f"{teacher.display_name} ({teacher.email})",
     )
     await session.commit()
     await session.refresh(teacher)
@@ -225,6 +235,7 @@ async def bulk_invite_teachers(
     await audit_repository.record(
         session, actor_id=user.id, action="teacher.bulk_invited", target_type="school",
         target_id=str(user.school_id),
+        detail=f"{created_count} invited, {error_count} failed",
     )
     await session.commit()
     return BulkImportResultOut(
@@ -249,7 +260,8 @@ async def update_teacher_status(
         raise NotFoundError(f'No teacher with id "{teacher_id}" in your school.')
     teacher.status = body.status
     await audit_repository.record(
-        session, actor_id=user.id, action="teacher.status.updated", target_type="user", target_id=teacher_id
+        session, actor_id=user.id, action="teacher.status.updated", target_type="user", target_id=teacher_id,
+        detail=f"{teacher.display_name} -> {body.status.value}",
     )
     await session.commit()
     assignments = await session.execute(
@@ -386,7 +398,8 @@ async def delete_teacher(
     await session.flush()  # no ORM relationship links these two tables, so explicit ordering is needed
     await session.delete(teacher)
     await audit_repository.record(
-        session, actor_id=actor.id, action="teacher.deleted", target_type="user", target_id=teacher_id
+        session, actor_id=actor.id, action="teacher.deleted", target_type="user", target_id=teacher_id,
+        detail=f"{teacher.display_name} ({teacher.email})",
     )
     await session.commit()
     return {"deleted": True}
@@ -450,7 +463,8 @@ async def create_student(
         )
     )
     await audit_repository.record(
-        session, actor_id=user.id, action="student.created", target_type="user", target_id=str(student_user.id)
+        session, actor_id=user.id, action="student.created", target_type="user", target_id=str(student_user.id),
+        detail=f"{student_user.display_name} ({student_user.email})",
     )
     await session.commit()
     return CreateStudentOut(
@@ -563,6 +577,10 @@ async def bulk_create_students(
     await audit_repository.record(
         session, actor_id=user.id, action="student.bulk_created", target_type="school",
         target_id=str(user.school_id),
+        detail=(
+            f"{sum(1 for r in results if r.status == 'created')} created, "
+            f"{sum(1 for r in results if r.status == 'error')} failed"
+        ),
     )
     await session.commit()
     return BulkImportResultOut(
@@ -726,7 +744,8 @@ async def delete_student(
     await session.flush()  # no ORM relationship links these two tables, so explicit ordering is needed
     await session.delete(student_user)
     await audit_repository.record(
-        session, actor_id=actor.id, action="student.deleted", target_type="user", target_id=student_id
+        session, actor_id=actor.id, action="student.deleted", target_type="user", target_id=student_id,
+        detail=f"{student_user.display_name} ({student_user.email})",
     )
     await session.commit()
     return {"deleted": True}
@@ -768,7 +787,8 @@ async def create_school_class(
     session.add(school_class)
     await session.flush()
     await audit_repository.record(
-        session, actor_id=user.id, action="class.created", target_type="class", target_id=str(school_class.id)
+        session, actor_id=user.id, action="class.created", target_type="class", target_id=str(school_class.id),
+        detail=f"Class {school_class.grade} · {school_class.section}",
     )
     await session.commit()
     await session.refresh(school_class)
@@ -791,10 +811,12 @@ async def update_school_class(
     school_class = result.scalar_one_or_none()
     if school_class is None:
         raise NotFoundError(f'No class with id "{class_id}" in your school.')
+    old_label = f"Class {school_class.grade} · {school_class.section}"
     school_class.grade = body.grade
     school_class.section = body.section
     await audit_repository.record(
-        session, actor_id=user.id, action="class.updated", target_type="class", target_id=class_id
+        session, actor_id=user.id, action="class.updated", target_type="class", target_id=class_id,
+        detail=f"{old_label} -> Class {body.grade} · {body.section}",
     )
     await session.commit()
     assignments = await session.execute(
@@ -826,7 +848,8 @@ async def update_school_class_status(
         raise NotFoundError(f'No class with id "{class_id}" in your school.')
     school_class.status = body.status
     await audit_repository.record(
-        session, actor_id=user.id, action="class.status.updated", target_type="class", target_id=class_id
+        session, actor_id=user.id, action="class.status.updated", target_type="class", target_id=class_id,
+        detail=f"Class {school_class.grade} · {school_class.section} -> {body.status.value}",
     )
     await session.commit()
     assignments = await session.execute(
@@ -882,7 +905,8 @@ async def delete_school_class(
     await session.flush()  # no ORM relationship links these two tables, so explicit ordering is needed
     await session.delete(school_class)
     await audit_repository.record(
-        session, actor_id=user.id, action="class.deleted", target_type="class", target_id=class_id
+        session, actor_id=user.id, action="class.deleted", target_type="class", target_id=class_id,
+        detail=f"Class {school_class.grade} · {school_class.section}",
     )
     await session.commit()
     return {"deleted": True}
@@ -917,7 +941,8 @@ async def update_class_assignments(
             TeacherClassAssignment(teacher_id=a.teacher_id, class_id=class_id, subject_id=a.subject_id)
         )
     await audit_repository.record(
-        session, actor_id=user.id, action="class.assignments.updated", target_type="class", target_id=class_id
+        session, actor_id=user.id, action="class.assignments.updated", target_type="class", target_id=class_id,
+        detail=f"{len(body.assignments)} assignment{'s' if len(body.assignments) != 1 else ''}",
     )
     await session.commit()
 
@@ -1004,7 +1029,8 @@ async def create_school_subject(
         session.add(subject)
         await session.flush()
         await audit_repository.record(
-            session, actor_id=user.id, action="subject.created", target_type="subject", target_id=str(subject.id)
+            session, actor_id=user.id, action="subject.created", target_type="subject", target_id=str(subject.id),
+            detail=subject.name,
         )
 
     curriculum_row = await session.execute(
@@ -1018,7 +1044,8 @@ async def create_school_subject(
     else:
         row.enabled = True
     await audit_repository.record(
-        session, actor_id=user.id, action="curriculum.subject_added", target_type="subject", target_id=str(subject.id)
+        session, actor_id=user.id, action="curriculum.subject_added", target_type="subject", target_id=str(subject.id),
+        detail=subject.name,
     )
     await session.commit()
     return SubjectToggle(id=str(subject.id), name=subject.name, enabled=True)
@@ -1143,10 +1170,32 @@ async def get_school_analytics(
         # docstring; only a real score of 0 should ever render as 0%.
         bloom_averages.append(BloomScore(level=level, percent=round(percent) if percent is not None else None))
 
+    week_expr = func.date_trunc("week", VoiceTest.created_at)
+    trend_rows = await session.execute(
+        select(week_expr, func.avg(StudentTestResult.mastery_percent), func.count(StudentTestResult.id))
+        .select_from(StudentTestResult)
+        .join(VoiceTest, VoiceTest.id == StudentTestResult.test_id)
+        .join(SchoolClass, SchoolClass.id == VoiceTest.class_id)
+        .where(SchoolClass.school_id == user.school_id)
+        .group_by(week_expr)
+        .order_by(week_expr)
+    )
+    # Last 8 weeks only - older weeks would make the trend line unreadable
+    # and aren't what "recent growth" is asking about.
+    mastery_trend = [
+        MasteryTrendPointOut(
+            period_label=week_start.strftime("%b %-d"),
+            mastery_avg_percent=round(avg_mastery) if avg_mastery is not None else 0,
+            test_count=count,
+        )
+        for week_start, avg_mastery, count in trend_rows.all()[-8:]
+    ]
+
     return SchoolAnalyticsOut(
         school_mastery_avg_percent=round(school_mastery_avg) if school_mastery_avg is not None else 0,
         class_breakdown=class_breakdown,
         bloom_averages=bloom_averages,
+        mastery_trend=mastery_trend,
     )
 
 
@@ -1195,6 +1244,76 @@ async def get_school_subscription(
         question_paper_count=await count_question_papers(session, user.school_id),
         question_paper_limit=plan.question_paper_limit,
     )
+
+
+@router.post("/subscription/upgrade-request")
+async def request_subscription_upgrade(
+    body: UpgradeRequestIn,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> UpgradeRequestOut:
+    """Self-serve "Request an upgrade" CTA on the Subscription page - the
+    plan itself stays read-only for School Admin (see GET /subscription's
+    docstring), this just opens a line to noolAI instead of leaving the
+    admin with nowhere to click. Always records to the audit log, which is
+    the durable record whether or not email is configured; the email to
+    sales_email is a best-effort notification on top of that, so a blank
+    SMTP/sales_email setup (e.g. local dev) never fails the request.
+
+    Rate-limited to one request per school per UPGRADE_REQUEST_COOLDOWN -
+    guards against a stray double-click or repeated-click spamming
+    sales_email, using the audit log itself as the source of truth rather
+    than a separate table or an in-memory counter (which wouldn't survive
+    a restart or work across multiple app instances).
+    """
+    last_request = (
+        await session.execute(
+            select(AuditLog.created_at)
+            .where(AuditLog.action == "subscription.upgrade_requested", AuditLog.target_id == str(user.school_id))
+            .order_by(AuditLog.created_at.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if last_request is not None:
+        elapsed = datetime.now(timezone.utc) - last_request
+        if elapsed < UPGRADE_REQUEST_COOLDOWN:
+            wait_minutes = max(1, round((UPGRADE_REQUEST_COOLDOWN - elapsed).total_seconds() / 60))
+            raise ConflictError(
+                f"You've already requested an upgrade recently - your account team will be in touch. "
+                f"Try again in about {wait_minutes} minute{'s' if wait_minutes != 1 else ''}."
+            )
+
+    school = await session.get(School, user.school_id)
+    result = await session.execute(select(Subscription).where(Subscription.school_id == user.school_id))
+    sub = result.scalar_one_or_none()
+    plan_name = None
+    if sub is not None:
+        plan = await session.get(Plan, sub.plan_id)
+        plan_name = plan.name
+
+    await audit_repository.record(
+        session, actor_id=user.id, action="subscription.upgrade_requested",
+        target_type="school", target_id=str(user.school_id),
+        detail=body.message,
+    )
+    await session.commit()
+
+    settings = get_settings()
+    emailed = False
+    if settings.sales_email and settings.smtp_host and settings.smtp_from_email:
+        note = f"\n\nAdmin's note: {body.message}" if body.message else ""
+        send_email(
+            to_email=settings.sales_email,
+            subject=f"Upgrade request from {school.name}",
+            message=(
+                f"School: {school.name} ({user.school_id})\n"
+                f"Requested by: {user.email}\n"
+                f"Current plan: {plan_name or 'none'}{note}"
+            ),
+        )
+        emailed = True
+
+    return UpgradeRequestOut(recorded=True, emailed=emailed)
 
 
 @router.get("/me", summary="The signed-in School Admin's own account")

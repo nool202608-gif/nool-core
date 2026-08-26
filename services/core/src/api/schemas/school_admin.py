@@ -71,6 +71,20 @@ class SendCredentialsEmailOut(CamelModel):
     sent: bool
 
 
+class UpgradeRequestIn(CamelModel):
+    """Optional free-text note from the admin (e.g. "need 50 more student
+    seats") - everything else (which school, current plan, current usage)
+    is looked up server-side rather than trusted from the client.
+    """
+
+    message: str | None = None
+
+
+class UpgradeRequestOut(CamelModel):
+    recorded: bool
+    emailed: bool
+
+
 class SchoolStudentOut(CamelModel):
     id: str
     display_name: str
@@ -226,10 +240,22 @@ class ClassBreakdownOut(CamelModel):
     improvement_percent: int
 
 
+class MasteryTrendPointOut(CamelModel):
+    """One week's average mastery across every Test taken at this school -
+    computed at read time from StudentTestResult/VoiceTest timestamps,
+    not a stored snapshot, so it's always exactly consistent with the
+    rest of analytics."""
+
+    period_label: str
+    mastery_avg_percent: int
+    test_count: int
+
+
 class SchoolAnalyticsOut(CamelModel):
     school_mastery_avg_percent: int
     class_breakdown: list[ClassBreakdownOut]
     bloom_averages: list[BloomScore]
+    mastery_trend: list[MasteryTrendPointOut]
 
 
 class SchoolSubscriptionOut(CamelModel):

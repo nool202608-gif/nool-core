@@ -14,11 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db_session, require_role
 from src.api.schemas.common import ListEnvelope
+from datetime import datetime, timezone
+
 from src.api.schemas.school_oversight import (
     SchoolAuditLogEntryOut,
     SchoolHomeworkOut,
     SchoolImprovementOut,
     SchoolLeaderboardEntryOut,
+    SchoolQuestionBankEntryOut,
     SchoolQuestionPaperOut,
     SchoolRetestProgressOut,
     SchoolVoiceTestOut,
@@ -26,7 +29,10 @@ from src.api.schemas.school_oversight import (
 from src.domain.models import (
     AuditLog,
     Homework,
+    HomeworkQuestion,
     QuestionPaper,
+    QuestionPaperQuestion,
+    QuestionPaperTopic,
     RetestAttempt,
     Role,
     SchoolClass,
@@ -35,6 +41,7 @@ from src.domain.models import (
     StudentRetestStatus,
     Subject,
     TeacherClassAssignment,
+    Topic,
     User,
     VoiceTest,
 )
@@ -293,6 +300,7 @@ async def list_school_improvement(
 
 @router.get("/leaderboard")
 async def get_school_leaderboard(
+    class_id: str | None = Query(default=None, alias="classId"),
     limit: int = 50,
     offset: int = 0,
     user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
@@ -300,7 +308,10 @@ async def get_school_leaderboard(
 ) -> ListEnvelope[SchoolLeaderboardEntryOut]:
     """School-wide version of GET /me/leaderboard (which is per-class,
     Student-only) - same StudentPoints source, ranked across the whole
-    school instead of one class.
+    school instead of one class. classId narrows the ranking to a single
+    class/section - rank() is computed over the already-filtered rows, so
+    a class-scoped request ranks 1..N within that class, not the whole
+    school's rank re-sliced.
     """
     rank = func.rank().over(order_by=StudentPoints.points.desc())
     base = (
@@ -310,6 +321,8 @@ async def get_school_leaderboard(
         .join(StudentPoints, StudentPoints.student_id == User.id, isouter=True)
         .where(SchoolClass.school_id == user.school_id)
     )
+    if class_id is not None:
+        base = base.where(StudentProfile.class_id == class_id)
     total = (await session.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
     rows = (
         await session.execute(
@@ -352,8 +365,98 @@ async def list_school_audit_log(
     items = [
         SchoolAuditLogEntryOut(
             id=str(entry.id), actor_name=actor_name, action=entry.action,
-            target_type=entry.target_type, target_id=entry.target_id, created_at=entry.created_at,
+            target_type=entry.target_type, target_id=entry.target_id, detail=entry.detail,
+            created_at=entry.created_at,
         )
         for entry, actor_name in rows
     ]
     return ListEnvelope(items=items, total=total)
+
+
+@router.get("/question-bank", summary="Every question generated at this school, grouped by topic")
+async def list_school_question_bank(
+    source: str | None = Query(default=None, description="QUESTION_PAPER or HOMEWORK"),
+    topic: str | None = Query(default=None, description="Case-insensitive substring match on topic"),
+    limit: int = 50,
+    offset: int = 0,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ListEnvelope[SchoolQuestionBankEntryOut]:
+    """Not a separate table - every Question Paper and Homework a
+    teacher has ever generated already has its questions sitting in
+    QuestionPaperQuestion/HomeworkQuestion; this just surfaces all of it
+    in one school-wide, topic-labelled view instead of it being locked
+    inside whichever paper/homework it was first generated for. The two
+    sources are fetched and merged in Python rather than one SQL UNION -
+    they don't share a topic/answer shape (paper questions have no
+    per-question topic or answer; homework questions have both, just
+    keyed differently) - and school-scale volumes make that entirely
+    fine perf-wise.
+    """
+    entries: list[SchoolQuestionBankEntryOut] = []
+
+    if source is None or source == "QUESTION_PAPER":
+        paper_rows = (
+            await session.execute(
+                select(QuestionPaperQuestion, QuestionPaper, Subject)
+                .join(QuestionPaper, QuestionPaper.id == QuestionPaperQuestion.paper_id)
+                .join(Subject, Subject.id == QuestionPaper.subject_id)
+                .where(QuestionPaper.school_id == user.school_id)
+            )
+        ).all()
+        paper_ids = {paper.id for _, paper, _ in paper_rows}
+        topics_by_paper: dict = {}
+        if paper_ids:
+            topic_rows = await session.execute(
+                select(QuestionPaperTopic.paper_id, Topic.name)
+                .join(Topic, Topic.id == QuestionPaperTopic.topic_id)
+                .where(QuestionPaperTopic.paper_id.in_(paper_ids))
+            )
+            for paper_id, topic_name in topic_rows.all():
+                topics_by_paper.setdefault(paper_id, []).append(topic_name)
+        for question, paper, subject in paper_rows:
+            topic_names = topics_by_paper.get(paper.id)
+            entries.append(
+                SchoolQuestionBankEntryOut(
+                    id=str(question.id), text=question.text, answer=None,
+                    bloom_level=question.bloom_level, subject_name=subject.name,
+                    topic_label=", ".join(topic_names) if topic_names else subject.name,
+                    source="QUESTION_PAPER", source_name=paper.name, created_at=paper.created_at,
+                )
+            )
+
+    if source is None or source == "HOMEWORK":
+        hw_rows = (
+            await session.execute(
+                select(HomeworkQuestion, Homework, SchoolClass, VoiceTest.subject_id)
+                .join(Homework, Homework.id == HomeworkQuestion.homework_id)
+                .join(SchoolClass, SchoolClass.id == Homework.class_id)
+                .join(VoiceTest, VoiceTest.id == Homework.test_id)
+                .where(SchoolClass.school_id == user.school_id)
+            )
+        ).all()
+        subject_ids = {subject_id for *_, subject_id in hw_rows}
+        subject_names: dict = {}
+        if subject_ids:
+            subject_result = await session.execute(select(Subject).where(Subject.id.in_(subject_ids)))
+            subject_names = {s.id: s.name for s in subject_result.scalars().all()}
+        for question, hw, school_class, subject_id in hw_rows:
+            entries.append(
+                SchoolQuestionBankEntryOut(
+                    id=str(question.id), text=question.text, answer=question.answer,
+                    bloom_level=question.bloom_level, subject_name=subject_names.get(subject_id, ""),
+                    topic_label=hw.gap_topic, source="HOMEWORK",
+                    source_name=_class_label(school_class), created_at=None,
+                )
+            )
+
+    if topic:
+        needle = topic.strip().lower()
+        entries = [e for e in entries if needle in e.topic_label.lower()]
+
+    # created_at=None (Homework has no timestamp column at all) sorts last,
+    # not first - datetime.min is the oldest possible instant, so it never
+    # outranks a real date under reverse=True (newest-first).
+    entries.sort(key=lambda e: e.created_at or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    total = len(entries)
+    return ListEnvelope(items=entries[offset : offset + limit], total=total)

@@ -22,6 +22,12 @@ class CoreSettings(BaseServiceSettings):
     smtp_password: str | None = None
     smtp_from_email: str | None = None
 
+    # Where a School Admin's "Request an upgrade" click gets emailed - see
+    # POST /school/subscription/upgrade-request. Blank-safe like the SMTP
+    # settings above: with no SMTP configured, or this unset, the request
+    # still records to the audit log, it just isn't emailed anywhere.
+    sales_email: str | None = None
+
     @property
     def database_url(self) -> str:
         """Async SQLAlchemy connection string.

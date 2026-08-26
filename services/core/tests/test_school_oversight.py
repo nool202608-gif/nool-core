@@ -10,12 +10,24 @@ import uuid
 from src.api.routes import school_oversight
 from src.domain.models import (
     AssignmentTargetMode,
+    BloomLevel,
     Chapter,
+    Dataset,
+    Homework,
+    HomeworkDifficulty,
+    HomeworkQuestion,
+    QuestionPaper,
+    QuestionPaperQuestion,
+    QuestionPaperStatus,
+    QuestionPaperTopic,
     Role,
     School,
     SchoolClass,
+    StudentPoints,
+    StudentProfile,
     Subject,
     TestStatus,
+    Topic,
     User,
     UserStatus,
     VoiceTest,
@@ -98,3 +110,109 @@ async def test_school_voice_tests_pagination(db_session):
     assert len(first_page.items) == 2
     assert second_page.total == 3
     assert len(second_page.items) == 1
+
+
+async def _seed_student(db_session, school_id, class_id, display_name) -> User:
+    student = User(
+        firebase_uid=f"student-{uuid.uuid4()}", email=f"{uuid.uuid4()}@example.com",
+        display_name=display_name, role=Role.STUDENT, school_id=school_id, status=UserStatus.ACTIVE,
+    )
+    db_session.add(student)
+    await db_session.flush()
+    db_session.add(StudentProfile(user_id=student.id, class_id=class_id, roll_number=1))
+    await db_session.flush()
+    return student
+
+
+async def test_leaderboard_class_filter_ranks_only_within_that_class(db_session):
+    school = await _seed_school(db_session)
+    admin = await _seed_admin(db_session, school.id)
+    class_a, _, _ = await _seed_class_subject_chapter(db_session, school.id)
+    class_b, _, _ = await _seed_class_subject_chapter(db_session, school.id)
+    student_a = await _seed_student(db_session, school.id, class_a.id, "Student A")
+    student_b = await _seed_student(db_session, school.id, class_b.id, "Student B")
+    db_session.add_all([
+        StudentPoints(student_id=student_a.id, points=10),
+        StudentPoints(student_id=student_b.id, points=99),
+    ])
+    await db_session.flush()
+
+    result = await school_oversight.get_school_leaderboard(
+        class_id=str(class_a.id), limit=50, offset=0, user=admin, session=db_session,
+    )
+
+    assert result.total == 1
+    assert result.items[0].display_name == "Student A"
+    assert result.items[0].rank == 1
+
+
+async def test_question_bank_merges_paper_and_homework_sources_by_topic(db_session):
+    school = await _seed_school(db_session)
+    admin = await _seed_admin(db_session, school.id)
+    school_class, subject, chapter = await _seed_class_subject_chapter(db_session, school.id)
+    topic = Topic(chapter_id=chapter.id, name="Photosynthesis")
+    db_session.add(topic)
+    await db_session.flush()
+
+    teacher = User(
+        firebase_uid=f"t-{uuid.uuid4()}", email=f"{uuid.uuid4()}@example.com",
+        display_name="Teacher", role=Role.TEACHER, school_id=school.id, status=UserStatus.ACTIVE,
+    )
+    db_session.add(teacher)
+    await db_session.flush()
+
+    paper = QuestionPaper(
+        school_id=school.id, created_by=teacher.id, name="Unit Test", exam_type="UNIT_TEST",
+        board="CBSE", grade=8, language="en", subject_id=subject.id, status=QuestionPaperStatus.FINALIZED,
+    )
+    db_session.add(paper)
+    await db_session.flush()
+    db_session.add_all([
+        QuestionPaperTopic(paper_id=paper.id, topic_id=topic.id),
+        QuestionPaperQuestion(paper_id=paper.id, order=1, bloom_level=BloomLevel.REMEMBER, marks=2, text="What is photosynthesis?"),
+    ])
+
+    test = await _seed_voice_test(db_session, school_class, subject, chapter)
+    homework = Homework(
+        test_id=test.id, class_id=school_class.id, gap_topic="Photosynthesis basics",
+        gap_mastery_percent=40, total_questions=1, difficulty=HomeworkDifficulty.EASY,
+        target_mode=AssignmentTargetMode.WHOLE_CLASS,
+    )
+    db_session.add(homework)
+    dataset = Dataset(name="Bio Basics", question_count=10, description="Seed dataset")
+    db_session.add(dataset)
+    await db_session.flush()
+    db_session.add(
+        HomeworkQuestion(
+            homework_id=homework.id, order=1, bloom_level=BloomLevel.UNDERSTAND,
+            dataset_id=dataset.id, text="Explain the light reaction.", answer="It happens in the thylakoid.",
+        )
+    )
+    await db_session.flush()
+
+    result = await school_oversight.list_school_question_bank(
+        source=None, topic=None, limit=50, offset=0, user=admin, session=db_session,
+    )
+
+    assert result.total == 2
+    by_source = {item.source: item for item in result.items}
+    assert by_source["QUESTION_PAPER"].topic_label == "Photosynthesis"
+    assert by_source["QUESTION_PAPER"].answer is None
+    assert by_source["HOMEWORK"].topic_label == "Photosynthesis basics"
+    assert by_source["HOMEWORK"].answer == "It happens in the thylakoid."
+
+    filtered = await school_oversight.list_school_question_bank(
+        source=None, topic="basics", limit=50, offset=0, user=admin, session=db_session,
+    )
+    assert filtered.total == 1
+    assert filtered.items[0].source == "HOMEWORK"
+
+    case_insensitive = await school_oversight.list_school_question_bank(
+        source=None, topic="PHOTOSYNTHESIS", limit=50, offset=0, user=admin, session=db_session,
+    )
+    assert case_insensitive.total == 2
+
+    no_match = await school_oversight.list_school_question_bank(
+        source=None, topic="nonexistent topic", limit=50, offset=0, user=admin, session=db_session,
+    )
+    assert no_match.total == 0

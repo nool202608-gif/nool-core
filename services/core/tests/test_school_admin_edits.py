@@ -5,6 +5,7 @@ db_session, same pattern as test_subscription_limits.py.
 """
 
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from shared.errors import ConflictError
@@ -23,18 +24,27 @@ from src.api.schemas.school_admin import (
     UpdateClassStatusIn,
     UpdateSchoolAdminMeIn,
     UpdateStudentIn,
+    UpgradeRequestIn,
 )
+from src.config.settings import CoreSettings
 from src.domain.models import (
+    AssignmentTargetMode,
     AssistantMessage,
     AuditLog,
     BloomLevel,
+    Chapter,
     ChatRole,
+    Plan,
     Role,
     School,
     SchoolClass,
+    StudentTestResult,
     Subject,
+    Subscription,
+    TestStatus,
     User,
     UserStatus,
+    VoiceTest,
 )
 from src.repositories import audit_repository
 from src.services import user_provisioning
@@ -131,6 +141,7 @@ async def test_school_audit_log_has_no_cross_school_leakage(db_session):
     assert result.total == 1
     assert result.items[0].action == "teacher.invited"
     assert result.items[0].actor_name == "Admin"
+    assert result.items[0].detail.startswith("Teacher A (")
 
 
 async def test_school_audit_log_excludes_super_admin_actions_on_this_school(db_session):
@@ -260,6 +271,10 @@ async def test_delete_teacher_removes_the_account(db_session):
     assert result == {"deleted": True}
     listed = await school_admin.list_teachers(user=admin, session=db_session)
     assert invited.id not in {t.id for t in listed.items}
+    audit_row = (
+        await db_session.execute(select(AuditLog).where(AuditLog.action == "teacher.deleted", AuditLog.target_id == invited.id))
+    ).scalar_one()
+    assert audit_row.detail is not None and "Deletable Teacher" in audit_row.detail
 
 
 async def test_delete_teacher_is_idempotent_for_unknown_id(db_session):
@@ -358,6 +373,10 @@ async def test_update_school_class_status_deactivates_and_reactivates(db_session
         created.id, UpdateClassStatusIn(status=UserStatus.DEACTIVATED), user=admin, session=db_session,
     )
     assert deactivated.status == UserStatus.DEACTIVATED
+    audit_row = (
+        await db_session.execute(select(AuditLog).where(AuditLog.action == "class.status.updated", AuditLog.target_id == created.id))
+    ).scalar_one()
+    assert audit_row.detail == "Class 7 · A -> DEACTIVATED"
 
 
 async def test_delete_school_class_blocked_when_it_has_students(db_session):
@@ -399,6 +418,39 @@ async def test_create_school_subject_adds_and_enables_a_new_subject(db_session):
     assert any(s.id == created.id and s.enabled for s in curriculum.subjects)
 
 
+async def test_school_analytics_mastery_trend_reflects_recent_test_results(db_session):
+    school = await _seed_school(db_session)
+    admin = await _seed_school_admin(db_session, school.id)
+    school_class = SchoolClass(school_id=school.id, grade=9, section="A")
+    subject = Subject(name=f"Subject-{uuid.uuid4()}")
+    db_session.add_all([school_class, subject])
+    await db_session.flush()
+    chapter = Chapter(subject_id=subject.id, name="Chapter 1")
+    db_session.add(chapter)
+    await db_session.flush()
+    test = VoiceTest(
+        class_id=school_class.id, subject_id=subject.id, chapter_id=chapter.id, topic_id=None,
+        duration_minutes=20, completion_window_hours=48,
+        target_mode=AssignmentTargetMode.WHOLE_CLASS, status=TestStatus.RESULTS_READY,
+    )
+    db_session.add(test)
+    await db_session.flush()
+    student = User(
+        firebase_uid=f"s-{uuid.uuid4()}", email=f"{uuid.uuid4()}@example.com",
+        display_name="Student", role=Role.STUDENT, school_id=school.id, status=UserStatus.ACTIVE,
+    )
+    db_session.add(student)
+    await db_session.flush()
+    db_session.add(StudentTestResult(test_id=test.id, student_id=student.id, mastery_percent=80))
+    await db_session.flush()
+
+    result = await school_admin.get_school_analytics(user=admin, session=db_session)
+
+    assert len(result.mastery_trend) == 1
+    assert result.mastery_trend[0].mastery_avg_percent == 80
+    assert result.mastery_trend[0].test_count == 1
+
+
 async def test_create_school_subject_reuses_existing_name_case_insensitively(db_session):
     school = await _seed_school(db_session)
     admin = await _seed_school_admin(db_session, school.id)
@@ -413,3 +465,102 @@ async def test_create_school_subject_reuses_existing_name_case_insensitively(db_
     assert created.id == str(existing.id)
     subjects = (await db_session.execute(select(Subject).where(Subject.name == "Geography"))).scalars().all()
     assert len(subjects) == 1  # no duplicate catalog row
+
+
+async def test_request_subscription_upgrade_records_audit_log_without_smtp(db_session, monkeypatch):
+    monkeypatch.setattr(school_admin, "get_settings", lambda: CoreSettings(
+        postgres_user="x", postgres_password="x", postgres_db="x",
+    ))
+    school = await _seed_school(db_session)
+    admin = await _seed_school_admin(db_session, school.id)
+
+    result = await school_admin.request_subscription_upgrade(
+        UpgradeRequestIn(message="need 20 more student seats"), user=admin, session=db_session,
+    )
+
+    assert result.recorded is True
+    assert result.emailed is False  # no SMTP configured - still recorded, just not mailed
+    row = (
+        await db_session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "subscription.upgrade_requested", AuditLog.target_id == str(school.id)
+            )
+        )
+    ).scalar_one()
+    assert row.detail == "need 20 more student seats"
+
+
+async def test_request_subscription_upgrade_emails_sales_when_smtp_configured(db_session, monkeypatch, _fake_email):
+    monkeypatch.setattr(school_admin, "get_settings", lambda: CoreSettings(
+        postgres_user="x", postgres_password="x", postgres_db="x",
+        smtp_host="smtp.example.com", smtp_from_email="noreply@example.com", sales_email="sales@example.com",
+    ))
+    school = await _seed_school(db_session)
+    admin = await _seed_school_admin(db_session, school.id)
+    plan = Plan(name=f"Growth-{uuid.uuid4()}", price_label="x", teacher_limit=10, student_limit=100)
+    db_session.add(plan)
+    await db_session.flush()
+    db_session.add(
+        Subscription(
+            school_id=school.id, plan_id=plan.id, renews_at=datetime.now(timezone.utc) + timedelta(days=30)
+        )
+    )
+    await db_session.flush()
+
+    result = await school_admin.request_subscription_upgrade(
+        UpgradeRequestIn(), user=admin, session=db_session,
+    )
+
+    assert result.recorded is True
+    assert result.emailed is True
+    assert len(_fake_email) == 1
+    to_email, subject, message = _fake_email[0]
+    assert to_email == "sales@example.com"
+    assert school.name in subject
+    assert plan.name in message
+
+
+async def test_request_subscription_upgrade_is_rate_limited_per_school(db_session, monkeypatch):
+    monkeypatch.setattr(school_admin, "get_settings", lambda: CoreSettings(
+        postgres_user="x", postgres_password="x", postgres_db="x",
+    ))
+    school = await _seed_school(db_session)
+    admin = await _seed_school_admin(db_session, school.id)
+
+    first = await school_admin.request_subscription_upgrade(
+        UpgradeRequestIn(), user=admin, session=db_session,
+    )
+    assert first.recorded is True
+
+    with pytest.raises(ConflictError):
+        await school_admin.request_subscription_upgrade(UpgradeRequestIn(), user=admin, session=db_session)
+
+    # Backdating the existing row past the cooldown (rather than sleeping in
+    # the test) proves the limit is time-based, not a permanent one-shot.
+    row = (
+        await db_session.execute(
+            select(AuditLog).where(
+                AuditLog.action == "subscription.upgrade_requested", AuditLog.target_id == str(school.id)
+            )
+        )
+    ).scalar_one()
+    row.created_at = datetime.now(timezone.utc) - timedelta(hours=2)
+    await db_session.flush()
+
+    second = await school_admin.request_subscription_upgrade(UpgradeRequestIn(), user=admin, session=db_session)
+    assert second.recorded is True
+
+
+async def test_request_subscription_upgrade_rate_limit_is_scoped_per_school(db_session, monkeypatch):
+    monkeypatch.setattr(school_admin, "get_settings", lambda: CoreSettings(
+        postgres_user="x", postgres_password="x", postgres_db="x",
+    ))
+    school_a = await _seed_school(db_session)
+    school_b = await _seed_school(db_session)
+    admin_a = await _seed_school_admin(db_session, school_a.id)
+    admin_b = await _seed_school_admin(db_session, school_b.id)
+
+    await school_admin.request_subscription_upgrade(UpgradeRequestIn(), user=admin_a, session=db_session)
+    result_b = await school_admin.request_subscription_upgrade(UpgradeRequestIn(), user=admin_b, session=db_session)
+
+    assert result_b.recorded is True
