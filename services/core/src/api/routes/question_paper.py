@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.errors import ConflictError, NotFoundError, ValidationError
 
-from src.api.deps import get_db_session, require_role
+from src.api.deps import get_db_session, require_feature, require_role
 from src.api.schemas.bloom import BloomTarget
 from src.api.schemas.common import ListEnvelope
 from src.api.schemas.dataset import DatasetShare
@@ -21,6 +21,7 @@ from src.api.schemas.question_paper import (
     UpdateQuestionPaperQuestionIn,
 )
 from src.domain.models import (
+    Feature,
     QuestionPaper,
     QuestionPaperBloomDistribution,
     QuestionPaperChapter,
@@ -188,6 +189,7 @@ async def _apply_body(session: AsyncSession, paper: QuestionPaper, body: CreateQ
 @router.get("/question-papers")
 async def list_papers(
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.QUESTION_PAPER)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[QuestionPaperOut]:
     result = await session.execute(select(QuestionPaper).where(QuestionPaper.school_id == user.school_id))
@@ -199,6 +201,7 @@ async def list_papers(
 async def get_paper(
     paper_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.QUESTION_PAPER)),
     session: AsyncSession = Depends(get_db_session),
 ) -> QuestionPaperOut:
     paper = await _get_paper_in_school(session, paper_id, user.school_id)
@@ -209,6 +212,7 @@ async def get_paper(
 async def create_paper(
     body: CreateQuestionPaperIn,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.QUESTION_PAPER)),
     session: AsyncSession = Depends(get_db_session),
 ) -> QuestionPaperOut:
     plan = await get_active_plan(session, user.school_id)
@@ -241,6 +245,7 @@ async def update_paper(
     paper_id: str,
     body: CreateQuestionPaperIn,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.QUESTION_PAPER)),
     session: AsyncSession = Depends(get_db_session),
 ) -> QuestionPaperOut:
     paper = await _get_paper_in_school(session, paper_id, user.school_id)
@@ -254,6 +259,7 @@ async def update_paper(
 async def generate_paper(
     paper_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.QUESTION_PAPER)),
     session: AsyncSession = Depends(get_db_session),
 ) -> QuestionPaperOut:
     paper = await _get_paper_in_school(session, paper_id, user.school_id)
@@ -323,6 +329,7 @@ async def _paper_questions_out(session: AsyncSession, paper_id: str) -> ListEnve
 async def list_paper_questions(
     paper_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.QUESTION_PAPER)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[QuestionPaperQuestionOut]:
     await _get_paper_in_school(session, paper_id, user.school_id)
@@ -335,6 +342,7 @@ async def update_paper_question(
     question_id: str,
     body: UpdateQuestionPaperQuestionIn,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.QUESTION_PAPER)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[QuestionPaperQuestionOut]:
     paper = await _get_paper_in_school(session, paper_id, user.school_id)
@@ -358,6 +366,7 @@ async def get_question_candidates(
     paper_id: str,
     question_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.QUESTION_PAPER)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[QuestionPaperQuestionCandidateOut]:
     paper = await _get_paper_in_school(session, paper_id, user.school_id)
@@ -388,6 +397,7 @@ async def reorder_questions(
     paper_id: str,
     body: ReorderQuestionsIn,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.QUESTION_PAPER)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[QuestionPaperQuestionOut]:
     await _get_paper_in_school(session, paper_id, user.school_id)
@@ -408,6 +418,7 @@ async def reorder_questions(
 async def finalize_paper(
     paper_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.QUESTION_PAPER)),
     session: AsyncSession = Depends(get_db_session),
 ) -> QuestionPaperOut:
     paper = await _get_paper_in_school(session, paper_id, user.school_id)

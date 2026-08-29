@@ -4,10 +4,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.errors import ValidationError
 
-from src.api.deps import get_db_session, require_role
+from src.api.deps import get_db_session, require_feature, require_role
 from src.api.schemas.assistant import ChatMessageOut, SendMessageIn
 from src.api.schemas.common import ListEnvelope
-from src.domain.models import AssistantMessage, ChatRole, Role, User
+from src.domain.models import AssistantMessage, ChatRole, Feature, Role, User
 
 router = APIRouter(prefix="/api/v1", tags=["assistant"])
 
@@ -47,6 +47,7 @@ async def _ensure_greeting(session: AsyncSession, teacher_id) -> None:
 @router.get("/assistant/messages")
 async def list_messages(
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.ASSISTANT)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[ChatMessageOut]:
     """The full thread, oldest first. Always has at least one message - a
@@ -69,6 +70,7 @@ async def list_messages(
 async def send_message(
     body: SendMessageIn,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.ASSISTANT)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ChatMessageOut:
     """Appends the teacher's message to the thread server-side, then

@@ -71,8 +71,17 @@ def _wire(monkeypatch, ai_session, bloom_levels, duration_seconds: int = 60):
     monkeypatch.setattr(ai_assessor, "get_session", lambda: FakeSessionContext(fake_db))
 
 
-def _session(duration_seconds: int = 60):
-    return SimpleNamespace(id="sess-1", context_label="Science", duration_seconds=duration_seconds)
+def _session(duration_seconds: int = 60, *, test_id=None, student_id="student-1"):
+    # test_id=None by default (a retest-flavored / not-yet-real-VoiceTest
+    # session) so these turn-taking tests never touch record_test_completion
+    # - that's covered on its own, against a real db_session, in
+    # test_test_completion.py, since FakeDbSession here only fakes the two
+    # `execute()` calls stream_session's initial fetch makes, not a full
+    # ORM session (add/flush/get/commit).
+    return SimpleNamespace(
+        id="sess-1", context_label="Science", duration_seconds=duration_seconds,
+        test_id=test_id, student_id=student_id,
+    )
 
 
 def _event_types(sent: list[dict]) -> list[str]:

@@ -4,23 +4,31 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.errors import ConflictError, NotFoundError
+from shared.errors import ConflictError, ForbiddenError, NotFoundError
 
 from src.api.deps import get_db_session, require_role
 from src.config.settings import get_settings
-from src.api.schemas.bloom import BloomDistributionOut, BloomScore, UpdateBloomDistributionIn
+from src.api.schemas.bloom import BloomDistributionOut, UpdateBloomDistributionIn
+from src.api.schemas.school_logo import SchoolLogoOut, UpdateSchoolLogoIn
 from src.api.schemas.common import ListEnvelope
+from src.api.schemas.reporting import (
+    CreateReportConfigurationIn,
+    DimensionSpecOut,
+    MetricSpecOut,
+    ReportConfigurationOut,
+    ReportResultOut,
+    RunReportIn,
+    SharedReportOut,
+)
 from src.api.schemas.school_admin import (
     BulkImportResultOut,
     BulkRowResultOut,
     ClassAssignmentOut,
-    ClassBreakdownOut,
-    MasteryTrendPointOut,
     CreateClassIn,
-    CreateSchoolSubjectIn,
+    CreateGradeIn,
     CreateStudentIn,
     CreateStudentOut,
     InviteTeacherIn,
@@ -31,6 +39,8 @@ from src.api.schemas.school_admin import (
     SchoolAnalyticsOut,
     SchoolCurriculumOut,
     SchoolDatasetOut,
+    GradeSubjectsOut,
+    SchoolGradeOut,
     SchoolStudentOut,
     SchoolSubscriptionOut,
     SchoolTeacherOut,
@@ -40,8 +50,9 @@ from src.api.schemas.school_admin import (
     UpdateClassAssignmentsIn,
     UpdateClassIn,
     UpdateClassStatusIn,
+    UpdateGradeStatusIn,
+    UpdateGradeSubjectsIn,
     UpdateSchoolAdminMeIn,
-    UpdateSchoolCurriculumIn,
     UpdateSchoolDatasetsIn,
     UpdateStudentIn,
     UpdateTeacherIn,
@@ -52,33 +63,41 @@ from src.api.schemas.school_admin import (
 from src.domain.models import (
     AssistantMessage,
     AuditLog,
-    BloomLevel,
     Dataset,
+    GradeSubject,
     Homework,
+    ImportJobType,
     Plan,
     QuestionPaper,
+    ReportConfiguration,
+    ReportShare,
     RetestAttempt,
     Role,
     School,
     SchoolClass,
     SchoolCurriculum,
+    SchoolGrade,
     SchoolDataset,
     StudentHomeworkProgress,
     StudentPoints,
     StudentProfile,
     StudentTestResult,
-    StudentTestResultBloomScore,
     Subject,
     Subscription,
     TeacherClassAssignment,
-    TopicPerformance,
+    UpgradeRequest,
     User,
     UserStatus,
     VoiceTest,
     VoiceTestTargetStudent,
 )
-from src.repositories import audit_repository
-from src.repositories.roster_repository import student_count
+from src.repositories import audit_repository, import_job_repository
+from src.repositories.roster_repository import (
+    get_or_create_grade,
+    grade_student_count,
+    section_count,
+    student_count,
+)
 from src.repositories.subscription_repository import get_active_plan
 from src.repositories.usage_repository import (
     count_question_papers,
@@ -86,8 +105,10 @@ from src.repositories.usage_repository import (
     count_teachers,
     count_tests,
 )
+from src.services import reporting
 from src.services.bulk_import import BulkRowResult, parse_rows
 from src.services.email import send_email
+from src.services.school_analytics import compute_school_analytics
 from src.services.user_provisioning import create_firebase_user, reset_password
 
 router = APIRouter(prefix="/api/v1/school", tags=["school-admin"])
@@ -236,6 +257,11 @@ async def bulk_invite_teachers(
         session, actor_id=user.id, action="teacher.bulk_invited", target_type="school",
         target_id=str(user.school_id),
         detail=f"{created_count} invited, {error_count} failed",
+    )
+    import_job_repository.record(
+        session, school_id=user.school_id, initiated_by=user.id, job_type=ImportJobType.TEACHER_INVITE,
+        filename=file.filename or "upload", row_count=len(rows),
+        created_count=created_count, error_count=error_count,
     )
     await session.commit()
     return BulkImportResultOut(
@@ -574,19 +600,23 @@ async def bulk_create_students(
             await session.rollback()
             results.append(BulkRowResult(row=index, status="error", email=email, error=str(exc)))
 
+    created_count = sum(1 for r in results if r.status == "created")
+    error_count = sum(1 for r in results if r.status == "error")
     await audit_repository.record(
         session, actor_id=user.id, action="student.bulk_created", target_type="school",
         target_id=str(user.school_id),
-        detail=(
-            f"{sum(1 for r in results if r.status == 'created')} created, "
-            f"{sum(1 for r in results if r.status == 'error')} failed"
-        ),
+        detail=f"{created_count} created, {error_count} failed",
+    )
+    import_job_repository.record(
+        session, school_id=user.school_id, initiated_by=user.id, job_type=ImportJobType.STUDENT_CREATE,
+        filename=file.filename or "upload", row_count=len(rows),
+        created_count=created_count, error_count=error_count,
     )
     await session.commit()
     return BulkImportResultOut(
         results=[BulkRowResultOut(**r.__dict__) for r in results],
-        created_count=sum(1 for r in results if r.status == "created"),
-        error_count=sum(1 for r in results if r.status == "error"),
+        created_count=created_count,
+        error_count=error_count,
     )
 
 
@@ -783,7 +813,10 @@ async def create_school_class(
     user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
     session: AsyncSession = Depends(get_db_session),
 ) -> SchoolAdminClassOut:
-    school_class = SchoolClass(school_id=user.school_id, grade=body.grade, section=body.section)
+    grade_row = await get_or_create_grade(session, user.school_id, body.grade)
+    school_class = SchoolClass(
+        school_id=user.school_id, grade=body.grade, section=body.section, grade_id=grade_row.id,
+    )
     session.add(school_class)
     await session.flush()
     await audit_repository.record(
@@ -812,6 +845,8 @@ async def update_school_class(
     if school_class is None:
         raise NotFoundError(f'No class with id "{class_id}" in your school.')
     old_label = f"Class {school_class.grade} · {school_class.section}"
+    if body.grade != school_class.grade:
+        school_class.grade_id = (await get_or_create_grade(session, user.school_id, body.grade)).id
     school_class.grade = body.grade
     school_class.section = body.section
     await audit_repository.record(
@@ -912,6 +947,153 @@ async def delete_school_class(
     return {"deleted": True}
 
 
+async def _grade_out(session: AsyncSession, school_grade: SchoolGrade) -> SchoolGradeOut:
+    return SchoolGradeOut(
+        id=str(school_grade.id), grade=school_grade.grade,
+        section_count=await section_count(session, school_grade.id),
+        student_count=await grade_student_count(session, school_grade.id),
+        status=school_grade.status,
+    )
+
+
+@router.get("/grades", summary="List this school's Classes (the grade level, above Sections)")
+async def list_school_grades(
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ListEnvelope[SchoolGradeOut]:
+    result = await session.execute(select(SchoolGrade).where(SchoolGrade.school_id == user.school_id))
+    items = [await _grade_out(session, g) for g in result.scalars().all()]
+    return ListEnvelope(items=items, total=len(items))
+
+
+@router.post("/grades", status_code=201, summary="Create a Class (e.g. \"Class 10\")")
+async def create_school_grade(
+    body: CreateGradeIn,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> SchoolGradeOut:
+    existing = await session.execute(
+        select(SchoolGrade.id).where(SchoolGrade.school_id == user.school_id, SchoolGrade.grade == body.grade)
+    )
+    if existing.first() is not None:
+        raise ConflictError(f"Class {body.grade} already exists at your school.")
+    school_grade = SchoolGrade(school_id=user.school_id, grade=body.grade)
+    session.add(school_grade)
+    await session.flush()
+    await audit_repository.record(
+        session, actor_id=user.id, action="grade.created", target_type="grade", target_id=str(school_grade.id),
+        detail=f"Class {school_grade.grade}",
+    )
+    await session.commit()
+    return await _grade_out(session, school_grade)
+
+
+@router.patch("/grades/{grade_id}/status", summary="Activate/deactivate a Class")
+async def update_school_grade_status(
+    grade_id: str,
+    body: UpdateGradeStatusIn,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> SchoolGradeOut:
+    result = await session.execute(
+        select(SchoolGrade).where(SchoolGrade.id == grade_id, SchoolGrade.school_id == user.school_id)
+    )
+    school_grade = result.scalar_one_or_none()
+    if school_grade is None:
+        raise NotFoundError(f'No Class with id "{grade_id}" in your school.')
+    school_grade.status = body.status
+    await audit_repository.record(
+        session, actor_id=user.id, action="grade.status.updated", target_type="grade", target_id=grade_id,
+        detail=f"Class {school_grade.grade} -> {body.status.value}",
+    )
+    await session.commit()
+    return await _grade_out(session, school_grade)
+
+
+@router.delete("/grades/{grade_id}", summary="Permanently delete a Class")
+async def delete_school_grade(
+    grade_id: str,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, bool]:
+    """Idempotent, and blocked up front (same shape as delete_school_class)
+    when any Section still belongs to this Class - move/delete those first.
+    """
+    result = await session.execute(
+        select(SchoolGrade).where(SchoolGrade.id == grade_id, SchoolGrade.school_id == user.school_id)
+    )
+    school_grade = result.scalar_one_or_none()
+    if school_grade is None:
+        return {"deleted": True}
+
+    remaining_sections = await section_count(session, school_grade.id)
+    if remaining_sections > 0:
+        raise ConflictError(
+            f"This Class still has {remaining_sections} section(s). Move or remove them first."
+        )
+    await session.delete(school_grade)
+    await audit_repository.record(
+        session, actor_id=user.id, action="grade.deleted", target_type="grade", target_id=grade_id,
+        detail=f"Class {school_grade.grade}",
+    )
+    await session.commit()
+    return {"deleted": True}
+
+
+async def _get_own_grade(session: AsyncSession, grade_id: str, school_id) -> SchoolGrade:
+    result = await session.execute(
+        select(SchoolGrade).where(SchoolGrade.id == grade_id, SchoolGrade.school_id == school_id)
+    )
+    school_grade = result.scalar_one_or_none()
+    if school_grade is None:
+        raise NotFoundError(f'No Class with id "{grade_id}" in your school.')
+    return school_grade
+
+
+@router.get("/grades/{grade_id}/subjects", summary="View which subjects a Class teaches")
+async def get_grade_subjects(
+    grade_id: str,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> GradeSubjectsOut:
+    await _get_own_grade(session, grade_id, user.school_id)
+    subjects_result = await session.execute(select(Subject))
+    subjects = subjects_result.scalars().all()
+    enabled_result = await session.execute(
+        select(GradeSubject.subject_id).where(GradeSubject.grade_id == grade_id, GradeSubject.enabled.is_(True))
+    )
+    enabled_ids = {row[0] for row in enabled_result.all()}
+    return GradeSubjectsOut(
+        grade_id=grade_id,
+        subjects=[SubjectToggle(id=str(s.id), name=s.name, enabled=s.id in enabled_ids) for s in subjects],
+    )
+
+
+@router.put("/grades/{grade_id}/subjects", summary="Set which subjects a Class teaches")
+async def update_grade_subjects(
+    grade_id: str,
+    body: UpdateGradeSubjectsIn,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> GradeSubjectsOut:
+    await _get_own_grade(session, grade_id, user.school_id)
+    existing = await session.execute(select(GradeSubject).where(GradeSubject.grade_id == grade_id))
+    # Keyed by str(subject_id) - same UUID-vs-string fix update_school_datasets
+    # already applies.
+    by_subject = {str(row.subject_id): row for row in existing.scalars().all()}
+
+    enabled_ids = set(body.subject_ids)
+    for subject_id, row in by_subject.items():
+        row.enabled = subject_id in enabled_ids
+    for subject_id in enabled_ids - set(by_subject.keys()):
+        session.add(GradeSubject(grade_id=grade_id, subject_id=subject_id, enabled=True))
+    await audit_repository.record(
+        session, actor_id=user.id, action="grade.subjects.updated", target_type="grade", target_id=grade_id,
+    )
+    await session.commit()
+    return await get_grade_subjects(grade_id, user=user, session=session)
+
+
 @router.put("/classes/{class_id}/assignments", summary="Assign teacher + subject")
 async def update_class_assignments(
     class_id: str,
@@ -960,8 +1142,14 @@ async def update_class_assignments(
     )
 
 
-@router.get("/curriculum")
+@router.get("/curriculum", summary="This school's assigned subjects (read-only)")
 async def get_school_curriculum(
+    # Deliberately read-only: School Admin can see which subjects are
+    # assigned/enabled for their school but can no longer toggle them
+    # (that write capability - PUT /curriculum - was removed, not just
+    # hidden in the UI). Assignment is now exclusively Super Admin's job,
+    # from either the cross-tenant PUT /admin/schools/{id}/curriculum or
+    # the per-Class GradeSubject toggle.
     user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
     session: AsyncSession = Depends(get_db_session),
 ) -> SchoolCurriculumOut:
@@ -979,76 +1167,6 @@ async def get_school_curriculum(
             SubjectToggle(id=str(s.id), name=s.name, enabled=s.id in enabled_ids) for s in subjects
         ],
     )
-
-
-@router.put("/curriculum")
-async def update_school_curriculum(
-    body: UpdateSchoolCurriculumIn,
-    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
-    session: AsyncSession = Depends(get_db_session),
-) -> SchoolCurriculumOut:
-    existing = await session.execute(
-        select(SchoolCurriculum).where(SchoolCurriculum.school_id == user.school_id)
-    )
-    by_subject = {row.subject_id: row for row in existing.scalars().all()}
-
-    enabled_ids = set(body.subject_ids)
-    for subject_id, row in by_subject.items():
-        row.enabled = subject_id in enabled_ids
-    for subject_id in enabled_ids - set(by_subject.keys()):
-        session.add(SchoolCurriculum(school_id=user.school_id, subject_id=subject_id, enabled=True))
-    await audit_repository.record(
-        session, actor_id=user.id, action="curriculum.updated", target_type="school", target_id=str(user.school_id)
-    )
-    await session.commit()
-
-    return await get_school_curriculum(user=user, session=session)
-
-
-@router.post("/curriculum/subjects", status_code=201, summary="Add a subject not yet in the catalog")
-async def create_school_subject(
-    body: CreateSchoolSubjectIn,
-    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
-    session: AsyncSession = Depends(get_db_session),
-) -> SubjectToggle:
-    """The one write School Admin gets against the otherwise Super-Admin-
-    only global Subject catalog (see admin_catalog.py's module docstring) -
-    reuses an existing subject by case-insensitive name match instead of
-    always inserting, so two schools both asking for "Sanskrit" share one
-    catalog row rather than colliding on Subject.name's unique constraint.
-    Either way, the result is enabled for the caller's own school only.
-    """
-    name = body.name.strip()
-    if not name:
-        raise ConflictError("Subject name can't be empty.")
-
-    existing = await session.execute(select(Subject).where(func.lower(Subject.name) == name.lower()))
-    subject = existing.scalar_one_or_none()
-    if subject is None:
-        subject = Subject(name=name)
-        session.add(subject)
-        await session.flush()
-        await audit_repository.record(
-            session, actor_id=user.id, action="subject.created", target_type="subject", target_id=str(subject.id),
-            detail=subject.name,
-        )
-
-    curriculum_row = await session.execute(
-        select(SchoolCurriculum).where(
-            SchoolCurriculum.school_id == user.school_id, SchoolCurriculum.subject_id == subject.id
-        )
-    )
-    row = curriculum_row.scalar_one_or_none()
-    if row is None:
-        session.add(SchoolCurriculum(school_id=user.school_id, subject_id=subject.id, enabled=True))
-    else:
-        row.enabled = True
-    await audit_repository.record(
-        session, actor_id=user.id, action="curriculum.subject_added", target_type="subject", target_id=str(subject.id),
-        detail=subject.name,
-    )
-    await session.commit()
-    return SubjectToggle(id=str(subject.id), name=subject.name, enabled=True)
 
 
 @router.get("/datasets")
@@ -1110,93 +1228,7 @@ async def get_school_analytics(
     user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
     session: AsyncSession = Depends(get_db_session),
 ) -> SchoolAnalyticsOut:
-    classes_result = await session.execute(select(SchoolClass).where(SchoolClass.school_id == user.school_id))
-    classes = classes_result.scalars().all()
-
-    school_mastery_row = await session.execute(
-        select(func.avg(StudentTestResult.mastery_percent))
-        .join(VoiceTest, VoiceTest.id == StudentTestResult.test_id)
-        .join(SchoolClass, SchoolClass.id == VoiceTest.class_id)
-        .where(SchoolClass.school_id == user.school_id)
-    )
-    school_mastery_avg = school_mastery_row.scalar_one_or_none()
-
-    class_breakdown = []
-    for c in classes:
-        mastery_row = await session.execute(
-            select(func.avg(StudentTestResult.mastery_percent))
-            .join(VoiceTest, VoiceTest.id == StudentTestResult.test_id)
-            .where(VoiceTest.class_id == c.id)
-        )
-        mastery_avg = mastery_row.scalar_one_or_none()
-
-        # Improvement = the average after-minus-before delta across every
-        # topic in this class's Test -> Homework -> Retest loop that has
-        # actually completed both halves (TopicPerformance's before/after
-        # columns - see domain/models/improvement.py).
-        improvement_row = await session.execute(
-            select(func.avg(TopicPerformance.after_percent - TopicPerformance.before_percent))
-            .join(Homework, Homework.id == TopicPerformance.homework_id)
-            .where(
-                Homework.class_id == c.id,
-                TopicPerformance.before_percent.is_not(None),
-                TopicPerformance.after_percent.is_not(None),
-            )
-        )
-        improvement_avg = improvement_row.scalar_one_or_none()
-
-        class_breakdown.append(
-            ClassBreakdownOut(
-                class_id=str(c.id), label=f"Class {c.grade} · {c.section}",
-                mastery_avg_percent=round(mastery_avg) if mastery_avg is not None else 0,
-                improvement_percent=round(improvement_avg) if improvement_avg is not None else 0,
-            )
-        )
-
-    bloom_averages = []
-    for level in BloomLevel:
-        bloom_row = await session.execute(
-            select(func.avg(StudentTestResultBloomScore.percent))
-            .join(
-                StudentTestResult,
-                StudentTestResult.id == StudentTestResultBloomScore.student_test_result_id,
-            )
-            .join(VoiceTest, VoiceTest.id == StudentTestResult.test_id)
-            .join(SchoolClass, SchoolClass.id == VoiceTest.class_id)
-            .where(SchoolClass.school_id == user.school_id, StudentTestResultBloomScore.bloom_level == level)
-        )
-        percent = bloom_row.scalar_one_or_none()
-        # None stays None ("not assessed") rather than 0 - see BloomScore's
-        # docstring; only a real score of 0 should ever render as 0%.
-        bloom_averages.append(BloomScore(level=level, percent=round(percent) if percent is not None else None))
-
-    week_expr = func.date_trunc("week", VoiceTest.created_at)
-    trend_rows = await session.execute(
-        select(week_expr, func.avg(StudentTestResult.mastery_percent), func.count(StudentTestResult.id))
-        .select_from(StudentTestResult)
-        .join(VoiceTest, VoiceTest.id == StudentTestResult.test_id)
-        .join(SchoolClass, SchoolClass.id == VoiceTest.class_id)
-        .where(SchoolClass.school_id == user.school_id)
-        .group_by(week_expr)
-        .order_by(week_expr)
-    )
-    # Last 8 weeks only - older weeks would make the trend line unreadable
-    # and aren't what "recent growth" is asking about.
-    mastery_trend = [
-        MasteryTrendPointOut(
-            period_label=week_start.strftime("%b %-d"),
-            mastery_avg_percent=round(avg_mastery) if avg_mastery is not None else 0,
-            test_count=count,
-        )
-        for week_start, avg_mastery, count in trend_rows.all()[-8:]
-    ]
-
-    return SchoolAnalyticsOut(
-        school_mastery_avg_percent=round(school_mastery_avg) if school_mastery_avg is not None else 0,
-        class_breakdown=class_breakdown,
-        bloom_averages=bloom_averages,
-        mastery_trend=mastery_trend,
-    )
+    return await compute_school_analytics(session, user.school_id)
 
 
 @router.get("/curriculum/default-bloom-distribution")
@@ -1223,6 +1255,31 @@ async def update_default_bloom_distribution(
     await session.commit()
     await session.refresh(school)
     return BloomDistributionOut(distribution=school.default_bloom_distribution)
+
+
+@router.get("/logo")
+async def get_school_logo(
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> SchoolLogoOut:
+    school = await session.get(School, user.school_id)
+    return SchoolLogoOut(logo_data_uri=school.logo_data_uri)
+
+
+@router.put("/logo")
+async def update_school_logo(
+    body: UpdateSchoolLogoIn,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> SchoolLogoOut:
+    school = await session.get(School, user.school_id)
+    school.logo_data_uri = body.logo_data_uri
+    await audit_repository.record(
+        session, actor_id=user.id, action="school.logo_updated", target_type="school", target_id=str(user.school_id),
+    )
+    await session.commit()
+    await session.refresh(school)
+    return SchoolLogoOut(logo_data_uri=school.logo_data_uri)
 
 
 @router.get("/subscription")
@@ -1296,6 +1353,10 @@ async def request_subscription_upgrade(
         target_type="school", target_id=str(user.school_id),
         detail=body.message,
     )
+    # The durable, queryable half of this request - see UpgradeRequest's
+    # model docstring for why the audit-log row above isn't enough on its
+    # own (no resolved/unresolved state for Super Admin's inbox to key off).
+    session.add(UpgradeRequest(school_id=user.school_id, requested_by=user.id, message=body.message))
     await session.commit()
 
     settings = get_settings()
@@ -1351,4 +1412,213 @@ async def update_school_admin_me(
     return SchoolAdminMeOut(
         id=str(user.id), display_name=user.display_name, email=user.email,
         phone_number=user.phone_number, school_name=school.name if school else "",
+    )
+
+
+# --- Reporting (School Admin, own school only) ------------------------------
+# See src/services/reporting.py's DIMENSIONS registry. Only SCHOOL-scoped
+# dimensions (CLASS/SECTION/STUDENT) are exposed here - a School Admin has
+# exactly one school, so the platform-wide SCHOOL/PLAN dimensions (Super
+# Admin only) aren't relevant. school_id is always user.school_id, never
+# taken from the request body - see run_school_report below.
+
+@router.get("/reports/dimensions", summary="List available report dimensions/metrics for this school")
+async def list_school_report_dimensions(
+    _: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+) -> list[DimensionSpecOut]:
+    return [
+        DimensionSpecOut(
+            key=spec.key, label=spec.label, scope=spec.scope,
+            metrics=[MetricSpecOut(key=m.key, label=m.label) for m in spec.metrics],
+        )
+        for spec in reporting.DIMENSIONS.values()
+        if spec.scope == "SCHOOL"
+    ]
+
+
+@router.post("/reports/run", summary="Run a report ad-hoc, without saving it")
+async def run_school_report(
+    body: RunReportIn,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ReportResultOut:
+    rows = await reporting.run_report(
+        session, dimension=body.dimension, metrics=body.metrics, filters=body.filters, school_id=user.school_id,
+    )
+    return ReportResultOut(dimension=body.dimension, metrics=body.metrics, rows=rows)
+
+
+def _school_report_config_out(config: ReportConfiguration) -> ReportConfigurationOut:
+    return ReportConfigurationOut(
+        id=str(config.id), name=config.name, dimension=config.dimension, metrics=config.metrics,
+        filters=config.filters, school_id=str(config.school_id) if config.school_id else None,
+        created_at=config.created_at,
+    )
+
+
+@router.get("/reports/configs", summary="List this school's saved reports")
+async def list_school_report_configs(
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ListEnvelope[ReportConfigurationOut]:
+    result = await session.execute(
+        select(ReportConfiguration)
+        .where(ReportConfiguration.school_id == user.school_id)
+        .order_by(ReportConfiguration.created_at.desc())
+    )
+    items = [_school_report_config_out(c) for c in result.scalars().all()]
+    return ListEnvelope(items=items, total=len(items))
+
+
+@router.post("/reports/configs", status_code=201, summary="Save a report for this school")
+async def create_school_report_config(
+    body: CreateReportConfigurationIn,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ReportConfigurationOut:
+    reporting.validate_dimension_and_metrics(body.dimension, body.metrics)
+    config = ReportConfiguration(
+        owner_id=user.id, school_id=user.school_id, name=body.name,
+        dimension=body.dimension, metrics=body.metrics, filters=body.filters,
+    )
+    session.add(config)
+    await session.flush()
+    await audit_repository.record(
+        session, actor_id=user.id, action="report.created", target_type="report", target_id=str(config.id),
+        detail=body.name,
+    )
+    await session.commit()
+    return _school_report_config_out(config)
+
+
+async def _get_own_school_report_config(session: AsyncSession, config_id: str, school_id) -> ReportConfiguration:
+    result = await session.execute(
+        select(ReportConfiguration).where(
+            ReportConfiguration.id == config_id, ReportConfiguration.school_id == school_id
+        )
+    )
+    config = result.scalar_one_or_none()
+    if config is None:
+        raise NotFoundError(f'No saved report with id "{config_id}" at your school.')
+    return config
+
+
+@router.delete("/reports/configs/{config_id}", summary="Delete a saved report")
+async def delete_school_report_config(
+    config_id: str,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, bool]:
+    config = await _get_own_school_report_config(session, config_id, user.school_id)
+    await session.delete(config)
+    await audit_repository.record(
+        session, actor_id=user.id, action="report.deleted", target_type="report", target_id=config_id,
+    )
+    await session.commit()
+    return {"deleted": True}
+
+
+@router.get("/reports/configs/{config_id}/export", summary="Export a saved report's current results as CSV")
+async def export_school_report_config(
+    config_id: str,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> Response:
+    config = await _get_own_school_report_config(session, config_id, user.school_id)
+    rows = await reporting.run_report(
+        session, dimension=config.dimension, metrics=config.metrics, filters=config.filters,
+        school_id=user.school_id,
+    )
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["label", *config.metrics])
+    for row in rows:
+        writer.writerow([row.get("label", ""), *[row.get(m, "") for m in config.metrics]])
+    return Response(
+        content=buffer.getvalue(), media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={config.name}.csv"},
+    )
+
+
+@router.get("/reports/shared", summary="Reports a Super Admin has shared with this school")
+async def list_shared_reports(
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ListEnvelope[SharedReportOut]:
+    now = datetime.now(timezone.utc)
+    result = await session.execute(
+        select(ReportShare, ReportConfiguration)
+        .join(ReportConfiguration, ReportConfiguration.id == ReportShare.report_configuration_id)
+        .where(ReportShare.shared_with_school_id == user.school_id)
+        .order_by(ReportShare.created_at.desc())
+    )
+    items = []
+    for share, config in result.all():
+        if share.expires_at is not None and share.expires_at < now:
+            continue
+        sharer = await session.get(User, share.shared_by)
+        items.append(
+            SharedReportOut(
+                share_id=str(share.id), name=config.name, dimension=config.dimension, metrics=config.metrics,
+                filters=config.filters, access_level=share.access_level,
+                shared_by_name=sharer.display_name if sharer else "noolAI",
+                expires_at=share.expires_at,
+            )
+        )
+    return ListEnvelope(items=items, total=len(items))
+
+
+async def _get_valid_share_for_school(session: AsyncSession, share_id: str, school_id) -> ReportShare:
+    result = await session.execute(
+        select(ReportShare).where(ReportShare.id == share_id, ReportShare.shared_with_school_id == school_id)
+    )
+    share = result.scalar_one_or_none()
+    if share is None:
+        raise NotFoundError(f'No shared report with id "{share_id}" for your school.')
+    if share.expires_at is not None and share.expires_at < datetime.now(timezone.utc):
+        raise NotFoundError("This shared report has expired.")
+    return share
+
+
+@router.get("/reports/shared/{share_id}/run", summary="Run a report shared with this school")
+async def run_shared_report(
+    share_id: str,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> ReportResultOut:
+    share = await _get_valid_share_for_school(session, share_id, user.school_id)
+    config = await session.get(ReportConfiguration, share.report_configuration_id)
+    if config is None:
+        raise NotFoundError("The shared report no longer exists.")
+    rows = await reporting.run_report(
+        session, dimension=config.dimension, metrics=config.metrics, filters=config.filters,
+        school_id=config.school_id,
+    )
+    return ReportResultOut(dimension=config.dimension, metrics=config.metrics, rows=rows)
+
+
+@router.get("/reports/shared/{share_id}/export", summary="Export a report shared with this school, as CSV")
+async def export_shared_report(
+    share_id: str,
+    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> Response:
+    share = await _get_valid_share_for_school(session, share_id, user.school_id)
+    if share.access_level != "VIEW_EXPORT":
+        raise ForbiddenError("This report was shared as view-only and can't be exported.")
+    config = await session.get(ReportConfiguration, share.report_configuration_id)
+    if config is None:
+        raise NotFoundError("The shared report no longer exists.")
+    rows = await reporting.run_report(
+        session, dimension=config.dimension, metrics=config.metrics, filters=config.filters,
+        school_id=config.school_id,
+    )
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(["label", *config.metrics])
+    for row in rows:
+        writer.writerow([row.get("label", ""), *[row.get(m, "") for m in config.metrics]])
+    return Response(
+        content=buffer.getvalue(), media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={config.name}.csv"},
     )

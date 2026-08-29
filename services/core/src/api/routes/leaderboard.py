@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.deps import get_db_session, require_role
+from src.api.deps import get_db_session, require_feature, require_role
 from src.api.schemas.leaderboard import ClassLeaderboardOut, LeaderboardEntryOut
-from src.domain.models import Role, SchoolClass, StudentPoints, StudentProfile, User
+from src.domain.models import Feature, Role, SchoolClass, StudentPoints, StudentProfile, User
 
 router = APIRouter(prefix="/api/v1", tags=["leaderboard"])
 
@@ -17,6 +17,7 @@ def _initials(name: str) -> str:
 @router.get("/me/leaderboard")
 async def get_my_leaderboard(
     user: User = Depends(require_role(Role.STUDENT)),
+    _feature: User = Depends(require_feature(Feature.LEADERBOARD)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ClassLeaderboardOut:
     profile_result = await session.execute(

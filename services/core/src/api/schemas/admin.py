@@ -1,8 +1,9 @@
 from datetime import datetime
 
-from src.domain.models import SchoolStatus, SubscriptionStatus, UserStatus
+from src.domain.models import Feature, SchoolStatus, SubscriptionStatus, UpgradeRequestStatus, UserStatus
 
 from .common import CamelModel
+from .school_admin import MasteryTrendPointOut
 
 
 class SchoolOut(CamelModel):
@@ -11,6 +12,7 @@ class SchoolOut(CamelModel):
     board: str
     city: str
     address: str | None
+    pincode: str | None
     contact_email: str
     contact_phone: str | None
     principal_name: str | None
@@ -28,6 +30,7 @@ class CreateSchoolIn(CamelModel):
     contact_email: str
     plan_id: str
     address: str | None = None
+    pincode: str | None = None
     contact_phone: str | None = None
     principal_name: str | None = None
 
@@ -45,6 +48,7 @@ class UpdateSchoolIn(CamelModel):
     city: str | None = None
     contact_email: str | None = None
     address: str | None = None
+    pincode: str | None = None
     contact_phone: str | None = None
     principal_name: str | None = None
 
@@ -57,6 +61,12 @@ class PlanOut(CamelModel):
     student_limit: int
     test_limit: int | None
     question_paper_limit: int | None
+    # None = the plan bundles every Feature. Set/cleared via the dedicated
+    # GET/PUT /admin/plans/{id}/features (not this create/update body) -
+    # same "can't tell explicit null from omitted" reason CreateSchoolIn/
+    # UpdateSchoolIn never carry default_bloom_distribution either. See
+    # Plan.enabled_features' docstring.
+    enabled_features: list[Feature] | None
     active: bool
 
 
@@ -121,6 +131,11 @@ class PlatformAnalyticsOut(CamelModel):
     tests_this_month: int
     homework_completion_rate_percent: int
     school_breakdown: list[SchoolBreakdownOut]
+    # Same real, computed-at-read-time weekly average across every school
+    # on the platform - see MasteryTrendPointOut's docstring and
+    # src/services/school_analytics.py (this is the school-scoped version
+    # of the identical query, just without the school_id filter).
+    mastery_trend: list[MasteryTrendPointOut]
 
 
 class SchoolAdminOut(CamelModel):
@@ -167,3 +182,25 @@ class AuditLogEntryOut(CamelModel):
     target_type: str
     target_id: str
     created_at: datetime
+
+
+class UpgradeRequestSummaryOut(CamelModel):
+    """One row in the Super Admin Upgrade Requests inbox - see
+    UpgradeRequest's model docstring for why this exists as its own table
+    rather than reading the audit log directly (queue state needs a
+    status, an append-only log isn't the right shape for that).
+    """
+
+    id: str
+    school_id: str
+    school_name: str
+    requested_by_name: str
+    requested_by_email: str
+    message: str | None
+    status: UpgradeRequestStatus
+    created_at: datetime
+    resolved_at: datetime | None
+
+
+class UpdateUpgradeRequestStatusIn(CamelModel):
+    status: UpgradeRequestStatus

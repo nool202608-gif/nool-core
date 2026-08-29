@@ -43,3 +43,20 @@ class SchoolCurriculum(IdMixin, Base):
     school_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("schools.id"))
     subject_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("subjects.id"))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class GradeSubject(IdMixin, Base):
+    """Which subjects a Class (SchoolGrade) teaches - narrower than the
+    school-wide SchoolCurriculum toggle above. An admin picks this
+    explicitly per Class; it is not auto-derived from the school's own
+    enabled-subjects list (a school could enable Math school-wide but not
+    every grade teaches it in every board's curriculum). See
+    PUT /school/grades/{gradeId}/subjects.
+    """
+
+    __tablename__ = "grade_subjects"
+    __table_args__ = (UniqueConstraint("grade_id", "subject_id"),)
+
+    grade_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("school_grades.id"))
+    subject_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("subjects.id"))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)

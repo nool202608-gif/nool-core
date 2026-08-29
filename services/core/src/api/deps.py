@@ -3,11 +3,21 @@ from collections.abc import AsyncIterator
 from fastapi import Depends, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+
 from shared.auth import AuthenticatedUser, verify_token
 from shared.errors import ForbiddenError, UnauthorizedError
 
-from src.domain.models import Role, User
+from src.domain.models import Feature, Role, School, SchoolStatus, Subscription, SubscriptionStatus, User
 from src.repositories import get_by_firebase_uid, get_session
+from src.repositories.subscription_repository import get_active_plan
+from src.services.feature_entitlements import is_feature_enabled
+
+# A subscription in either of these states means the school's billing
+# relationship has ended (or never resolved) - access is blocked the same
+# way a SUSPENDED school is, not just "treated as unlimited" the way "no
+# subscription row yet" (a mid-onboarding school) already correctly is.
+_BLOCKED_SUBSCRIPTION_STATUSES = (SubscriptionStatus.CANCELED, SubscriptionStatus.PAST_DUE)
 
 
 def _extract_bearer_token(authorization: str | None) -> str:
@@ -59,6 +69,31 @@ async def get_current_app_user(
     app_user = await get_by_firebase_uid(session, user.uid)
     if app_user is None:
         raise UnauthorizedError("No application profile exists for this account yet.")
+    if app_user.school_id is not None:
+        result = await session.execute(
+            select(School.status, Subscription.status)
+            .outerjoin(Subscription, Subscription.school_id == School.id)
+            .where(School.id == app_user.school_id)
+        )
+        row = result.first()
+        # A school row always exists for a user with school_id set (FK-
+        # enforced) - row is None only if that invariant is somehow
+        # violated, in which case failing open here is wrong, but there's
+        # genuinely nothing to check against.
+        if row is not None:
+            school_status, subscription_status = row
+            if school_status == SchoolStatus.SUSPENDED:
+                raise ForbiddenError(
+                    "This school's access has been suspended. Contact your platform administrator."
+                )
+            # subscription_status is None for a school with no Subscription
+            # row yet (mid-onboarding) - that's the existing, correct
+            # "not yet a billable context" grace period (see
+            # get_active_plan's docstring), not a block.
+            if subscription_status in _BLOCKED_SUBSCRIPTION_STATUSES:
+                raise ForbiddenError(
+                    "This school's subscription is no longer active. Contact your platform administrator."
+                )
     return app_user
 
 
@@ -73,6 +108,30 @@ def require_role(*roles: Role):
     async def _check(user: User = Depends(get_current_app_user)) -> User:
         if user.role not in roles:
             raise ForbiddenError("Your role does not permit this action.")
+        return user
+
+    return _check
+
+
+def require_feature(feature: Feature):
+    """FastAPI dependency factory: 403s if `feature` is excluded by the
+    caller's school's active plan/subscription - the single source of
+    truth for feature access (see src/services/feature_entitlements.py
+    and Plan.enabled_features' docstring: deliberately not also settable
+    per-school, one control point). NULL means "no restriction," so this
+    is a no-op for every plan that hasn't been narrowed by a Super Admin.
+    A caller with no school_id (Super Admin) is never blocked.
+    """
+
+    async def _check(
+        user: User = Depends(get_current_app_user),
+        session: AsyncSession = Depends(get_db_session),
+    ) -> User:
+        if user.school_id is None:
+            return user
+        plan = await get_active_plan(session, user.school_id)
+        if not is_feature_enabled(feature, plan=plan):
+            raise ForbiddenError(f'The "{feature.value}" feature is not enabled for your school\'s plan.')
         return user
 
     return _check

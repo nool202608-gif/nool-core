@@ -62,6 +62,13 @@ services:
       # Read-only Admin SDK service account - see services/auth/README.md.
       # Never commit the target file; ./secrets/ is gitignored.
       - ${FIREBASE_CREDENTIALS_HOST_PATH:-./secrets/firebase-service-account.json}:/app/secrets/firebase-service-account.json:ro
+      # Live source - bind-mounted over the image's COPY'd copy so a host
+      # edit is visible in-container immediately; paired with --reload
+      # below so uvicorn actually picks it up without a manual restart.
+      # Local-dev convenience only - never done for a real deployment.
+      - ./shared:/app/shared
+      - ./services/auth/src:/app/src
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/src", "--reload-dir", "/app/shared"]
     depends_on:
       jaeger:
         condition: service_healthy
@@ -101,6 +108,10 @@ services:
       # to be committed. Bind-mounting it makes generated migration files
       # land on the host immediately, like any other generated artifact.
       - ./database/migrations:/app/database/migrations
+      # Live source - same reasoning/caveat as auth's mount above.
+      - ./shared:/app/shared
+      - ./services/core/src:/app/src
+    command: ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "/app/src", "--reload-dir", "/app/shared"]
     depends_on:
       postgres:
         condition: service_healthy

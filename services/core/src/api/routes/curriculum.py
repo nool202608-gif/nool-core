@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/v1", tags=["curriculum"])
 
 @router.get("/subjects")
 async def list_subjects(
-    user: User = Depends(require_role(Role.TEACHER)),
+    user: User = Depends(require_role(Role.TEACHER, Role.SCHOOL_ADMIN)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[SubjectOut]:
     """Filtered to the caller's school's enabled subjects
@@ -76,7 +76,7 @@ async def list_subjects_for_class(
 @router.get("/subjects/{subject_id}/chapters")
 async def list_chapters(
     subject_id: str,
-    user: User = Depends(require_role(Role.TEACHER)),
+    user: User = Depends(require_role(Role.TEACHER, Role.SCHOOL_ADMIN)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[ChapterOut]:
     result = await session.execute(select(Chapter).where(Chapter.subject_id == subject_id))
@@ -87,7 +87,7 @@ async def list_chapters(
 @router.get("/chapters/{chapter_id}/topics")
 async def list_topics(
     chapter_id: str,
-    user: User = Depends(require_role(Role.TEACHER)),
+    user: User = Depends(require_role(Role.TEACHER, Role.SCHOOL_ADMIN)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[TopicOut]:
     """Returns items: [] for a chapter with no authored topics yet - a

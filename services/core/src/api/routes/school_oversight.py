@@ -28,6 +28,8 @@ from src.api.schemas.school_oversight import (
 )
 from src.domain.models import (
     AuditLog,
+    Chapter,
+    CustomQuestion,
     Homework,
     HomeworkQuestion,
     QuestionPaper,
@@ -375,8 +377,18 @@ async def list_school_audit_log(
 
 @router.get("/question-bank", summary="Every question generated at this school, grouped by topic")
 async def list_school_question_bank(
-    source: str | None = Query(default=None, description="QUESTION_PAPER or HOMEWORK"),
+    source: str | None = Query(default=None, description="QUESTION_PAPER, HOMEWORK, or CUSTOM"),
     topic: str | None = Query(default=None, description="Case-insensitive substring match on topic"),
+    # Needs an explicit camelCase alias like every other multi-word Query
+    # param in this file (see class_id/teacher_id/subject_id above) -
+    # FastAPI doesn't auto-alias query params the way CamelModel does
+    # for JSON bodies, so without this the frontend's `?collectionName=`
+    # would never bind and the parameter would silently stay at default.
+    collection_name: str | None = Query(default=None, alias="collectionName", description="Exact match, CUSTOM rows only"),
+    # A separate boolean flag rather than overloading collection_name=""
+    # for "the general bank" - keeps the two cases unambiguous rather
+    # than relying on empty-string-vs-omitted query semantics.
+    general_bank_only: bool = Query(default=False, alias="generalBankOnly", description="True = only rows with no named set"),
     limit: int = 50,
     offset: int = 0,
     user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
@@ -450,9 +462,39 @@ async def list_school_question_bank(
                 )
             )
 
+    if source is None or source == "CUSTOM":
+        # Outer join on class - a grade-level question (CustomQuestion.
+        # class_id NULL, grade set instead) has no single SchoolClass row.
+        custom_rows = (
+            await session.execute(
+                select(CustomQuestion, Subject, Chapter, Topic, SchoolClass)
+                .join(Subject, Subject.id == CustomQuestion.subject_id)
+                .join(Chapter, Chapter.id == CustomQuestion.chapter_id)
+                .outerjoin(Topic, Topic.id == CustomQuestion.topic_id)
+                .outerjoin(SchoolClass, SchoolClass.id == CustomQuestion.class_id)
+                .where(CustomQuestion.school_id == user.school_id)
+            )
+        ).all()
+        for question, subject, chapter, question_topic, school_class in custom_rows:
+            source_name = _class_label(school_class) if school_class else f"Class {question.grade} (all sections)"
+            entries.append(
+                SchoolQuestionBankEntryOut(
+                    id=str(question.id), text=question.text, answer=question.answer,
+                    bloom_level=question.bloom_level, subject_name=subject.name,
+                    topic_label=question_topic.name if question_topic else chapter.name,
+                    source="CUSTOM", source_name=source_name, created_at=question.created_at,
+                    collection_name=question.collection_name,
+                )
+            )
+
     if topic:
         needle = topic.strip().lower()
         entries = [e for e in entries if needle in e.topic_label.lower()]
+
+    if general_bank_only:
+        entries = [e for e in entries if e.collection_name is None]
+    elif collection_name:
+        entries = [e for e in entries if e.collection_name == collection_name]
 
     # created_at=None (Homework has no timestamp column at all) sorts last,
     # not first - datetime.min is the oldest possible instant, so it never

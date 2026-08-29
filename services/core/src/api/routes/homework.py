@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.errors import ConflictError, NotFoundError
 
-from src.api.deps import get_db_session, require_role
+from src.api.deps import get_db_session, require_feature, require_role
 from src.api.schemas.common import ListEnvelope
 from src.api.schemas.homework import (
     AssignHomeworkIn,
@@ -18,6 +18,7 @@ from src.api.schemas.homework import (
 from src.api.schemas.roster import AssignmentTarget
 from src.domain.models import (
     AssignmentTargetMode,
+    Feature,
     Homework,
     HomeworkBloomDistribution,
     HomeworkDataset,
@@ -81,6 +82,7 @@ async def _serialize(session: AsyncSession, hw: Homework) -> HomeworkOut:
 @router.get("/homework")
 async def list_homework(
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.HOMEWORK)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[HomeworkOut]:
     result = await session.execute(
@@ -96,6 +98,7 @@ async def list_homework(
 async def get_homework(
     homework_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.HOMEWORK)),
     session: AsyncSession = Depends(get_db_session),
 ) -> HomeworkOut:
     hw = await get_homework_in_school(session, homework_id, user.school_id)
@@ -106,6 +109,7 @@ async def get_homework(
 async def create_homework(
     body: CreateHomeworkIn,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.HOMEWORK)),
     session: AsyncSession = Depends(get_db_session),
 ) -> HomeworkOut:
     test_result = await session.execute(
@@ -149,6 +153,7 @@ async def create_homework(
 async def generate_homework(
     homework_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.HOMEWORK)),
     session: AsyncSession = Depends(get_db_session),
 ) -> HomeworkOut:
     hw = await get_homework_in_school(session, homework_id, user.school_id)
@@ -188,6 +193,7 @@ async def generate_homework(
 async def list_homework_questions(
     homework_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.HOMEWORK)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[HomeworkQuestionOut]:
     await get_homework_in_school(session, homework_id, user.school_id)
@@ -238,6 +244,7 @@ async def update_homework_question(
     question_id: str,
     body: UpdateHomeworkQuestionIn,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.HOMEWORK)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[HomeworkQuestionOut]:
     hw = await get_homework_in_school(session, homework_id, user.school_id)
@@ -261,6 +268,7 @@ async def delete_homework_question(
     homework_id: str,
     question_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.HOMEWORK)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[HomeworkQuestionOut]:
     await get_homework_in_school(session, homework_id, user.school_id)
@@ -281,6 +289,7 @@ async def replace_homework_question(
     homework_id: str,
     question_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.HOMEWORK)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[HomeworkQuestionOut]:
     hw = await get_homework_in_school(session, homework_id, user.school_id)
@@ -311,6 +320,7 @@ async def assign_homework(
     homework_id: str,
     body: AssignHomeworkIn,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.HOMEWORK)),
     session: AsyncSession = Depends(get_db_session),
 ) -> HomeworkOut:
     hw = await get_homework_in_school(session, homework_id, user.school_id)

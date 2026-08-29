@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.errors import NotFoundError
 
-from src.api.deps import get_db_session, require_role
+from src.api.deps import get_db_session, require_feature, require_role
 from src.api.schemas.bloom import BloomDelta
 from src.api.schemas.improvement import (
     ClassImprovementOut,
@@ -14,6 +14,7 @@ from src.api.schemas.improvement import (
     TopicImprovementOut,
 )
 from src.domain.models import (
+    Feature,
     Homework,
     RetestAttempt,
     RetestBloomComparison,
@@ -80,6 +81,7 @@ async def _topic_improvement_for(session: AsyncSession, test_id, homework_id) ->
 async def get_class_improvement(
     test_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.IMPROVEMENT_ANALYSIS)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ClassImprovementOut:
     test = await get_test_in_school(session, test_id, user.school_id)
@@ -126,6 +128,7 @@ async def get_student_improvement(
     test_id: str,
     student_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.IMPROVEMENT_ANALYSIS)),
     session: AsyncSession = Depends(get_db_session),
 ) -> StudentImprovementOut:
     test = await get_test_in_school(session, test_id, user.school_id)

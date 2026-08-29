@@ -4,14 +4,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.errors import ConflictError, ForbiddenError, ValidationError
 
-from src.api.deps import get_db_session, require_role
+from src.api.deps import get_db_session, require_feature, require_role
 from src.api.schemas.common import ListEnvelope
 from src.api.schemas.roster import AssignmentTarget
 from src.api.schemas.voice_test import CreateTestIn, VoiceTestOut
 from src.domain.models import (
     AssignmentTargetMode,
+    Feature,
     Role,
     SchoolClass,
+    StudentProfile,
     TestStatus,
     User,
     VoiceTest,
@@ -59,6 +61,7 @@ async def _serialize(session: AsyncSession, test: VoiceTest) -> VoiceTestOut:
 @router.get("/tests")
 async def list_tests(
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.VOICE_TEST)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[VoiceTestOut]:
     result = await session.execute(
@@ -75,6 +78,7 @@ async def list_tests(
 async def get_test(
     test_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.VOICE_TEST)),
     session: AsyncSession = Depends(get_db_session),
 ) -> VoiceTestOut:
     test = await get_test_in_school(session, test_id, user.school_id)
@@ -85,6 +89,7 @@ async def get_test(
 async def create_test(
     body: CreateTestIn,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.VOICE_TEST)),
     session: AsyncSession = Depends(get_db_session),
 ) -> VoiceTestOut:
     if not await teaches_class_subject(session, user.id, body.class_id, body.subject_id):
@@ -113,8 +118,26 @@ async def create_test(
     for level in body.bloom_levels:
         session.add(VoiceTestBloomLevel(test_id=test.id, bloom_level=level))
     if body.target.mode == AssignmentTargetMode.SPECIFIC_STUDENTS:
-        for student_id in body.target.student_ids or []:
-            session.add(VoiceTestTargetStudent(test_id=test.id, student_id=student_id))
+        target_student_ids = list(body.target.student_ids or [])
+    else:
+        # WHOLE_CLASS previously left VoiceTestTargetStudent completely
+        # empty - every read path a student's own app uses to see "my
+        # assigned tests" (GET /me/assigned-tests, /me/assigned-tests/
+        # {id}, and the dashboard's pending_tests query) joins through
+        # this exact table, which its own docstring used to claim was
+        # "only populated when target_mode is SPECIFIC_STUDENTS" - so a
+        # WHOLE_CLASS test reached zero students in practice, not just
+        # some. Resolving the class roster here, once, at creation time
+        # makes both modes go through the identical downstream delivery
+        # path - no separate "is this WHOLE_CLASS, go look up the class
+        # roster instead" branch needed anywhere else in the codebase.
+        roster = await session.execute(
+            select(StudentProfile.user_id).where(StudentProfile.class_id == body.class_id)
+        )
+        target_student_ids = [str(row[0]) for row in roster.all()]
+    for student_id in target_student_ids:
+        session.add(VoiceTestTargetStudent(test_id=test.id, student_id=student_id))
+    test.assigned_count = len(target_student_ids)
 
     await session.commit()
     await session.refresh(test)
@@ -125,6 +148,7 @@ async def create_test(
 async def schedule_test(
     test_id: str,
     user: User = Depends(require_role(Role.TEACHER)),
+    _feature: User = Depends(require_feature(Feature.VOICE_TEST)),
     session: AsyncSession = Depends(get_db_session),
 ) -> VoiceTestOut:
     test = await get_test_in_school(session, test_id, user.school_id)

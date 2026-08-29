@@ -4,10 +4,9 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from shared.auth import AuthenticatedUser
 from shared.errors import UnauthorizedError
 
-from src.api.deps import get_current_user, get_db_session
+from src.api.deps import get_current_user, get_db_session, require_feature
 from src.api.schemas.ai_assessor import (
     CompletedEvent,
     ConnectionEvent,
@@ -22,9 +21,10 @@ from src.api.schemas.ai_assessor import (
     TranscriptEvent,
     TurnEvent,
 )
-from src.domain.models import AiAssessorSession, AiAssessorSessionBloomLevel
-from src.repositories import get_by_firebase_uid, get_session
+from src.domain.models import AiAssessorSession, AiAssessorSessionBloomLevel, Feature, User
+from src.repositories import get_session
 from src.services.content_generator import get_content_generator
+from src.services.test_completion import record_test_completion
 
 router = APIRouter(prefix="/api/v1", tags=["ai-assessor"])
 
@@ -32,13 +32,9 @@ router = APIRouter(prefix="/api/v1", tags=["ai-assessor"])
 @router.post("/ai-assessor/sessions", status_code=201, summary="Open a session")
 async def open_session(
     body: OpenSessionIn,
-    user: AuthenticatedUser = Depends(get_current_user),
+    app_user: User = Depends(require_feature(Feature.VOICE_TEST)),
     db: AsyncSession = Depends(get_db_session),
 ) -> OpenSessionOut:
-    app_user = await get_by_firebase_uid(db, user.uid)
-    if app_user is None:
-        raise UnauthorizedError("No application profile exists for this account yet.")
-
     ai_session = AiAssessorSession(
         student_id=app_user.id,
         test_id=body.test_id if not body.test_id.startswith("retest-") else None,
@@ -181,6 +177,21 @@ async def stream_session(websocket: WebSocket, session_id: str, token: str = Que
         if stopped:
             await websocket.send_json(ExitedEvent().model_dump(by_alias=True))
         else:
+            # Retests (ai_session.retest_attempt_id set) are scored via a
+            # separate, client-driven flow (see student_retest.py's
+            # process_retest_result) - only a primary Test session writes
+            # a real completion here.
+            if ai_session.test_id is not None:
+                async with get_session() as completion_db:
+                    await record_test_completion(
+                        completion_db,
+                        student_id=ai_session.student_id,
+                        test_id=ai_session.test_id,
+                        answered=answered,
+                        total_questions=len(questions),
+                        bloom_levels=bloom_levels,
+                    )
+                    await completion_db.commit()
             summary = SessionSummary(
                 questions_answered=answered, total_questions=len(questions), elapsed_seconds=_elapsed()
             )

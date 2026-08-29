@@ -72,6 +72,52 @@ async def get_my_progress(
         for subject, avg_pct, count in subject_rows.all()
     ]
 
+    # Weekly mastery trend for this one student - same week_expr/date_trunc
+    # pattern school_analytics.py's compute_school_analytics already uses
+    # for the school-wide trend, just scoped to student_id instead of
+    # school_id. Previously this was a single fake "Now" point (the
+    # average of bloom_mastery, itself always empty before
+    # record_test_completion existed) - now a real multi-week series once
+    # more than one week of results exists.
+    week_expr = func.date_trunc("week", VoiceTest.created_at)
+    trend_rows = await session.execute(
+        select(week_expr, func.avg(StudentTestResult.mastery_percent))
+        .select_from(StudentTestResult)
+        .join(VoiceTest, VoiceTest.id == StudentTestResult.test_id)
+        .where(StudentTestResult.student_id == user.id)
+        .group_by(week_expr)
+        .order_by(week_expr)
+    )
+    trend = trend_rows.all()[-8:]
+    if trend:
+        trajectory = [
+            TrajectoryPointOut(label=week_start.strftime("%b %-d"), mastery_percent=round(avg_pct))
+            for week_start, avg_pct in trend
+        ]
+        gain = trajectory[-1].mastery_percent - trajectory[0].mastery_percent
+        trajectory_gain_label = (
+            "No change yet" if len(trajectory) < 2 else (f"+{gain} pts" if gain >= 0 else f"{gain} pts")
+        )
+    else:
+        trajectory = [TrajectoryPointOut(label="Now", mastery_percent=0)]
+        trajectory_gain_label = "Not enough tests yet"
+
+    # The Bloom level this student is weakest at, among levels that have
+    # actually been assessed - a real "what to work on next" signal
+    # instead of the always-empty placeholder this used to be.
+    assessed = [b for b in bloom_mastery if b.percent is not None]
+    if assessed:
+        weakest = min(assessed, key=lambda b: b.percent or 0)
+        next_best_focus = NextBestFocusOut(
+            label=f"{weakest.level.value.title()}-level questions",
+            message=f"Your {weakest.level.value.lower()}-level mastery is {weakest.percent}% - the lowest of your assessed levels. A few more questions at this level would help most.",
+        )
+    else:
+        next_best_focus = NextBestFocusOut(
+            label="Take your first test",
+            message="Once you complete a Voice Test, your Bloom-level breakdown will show up here.",
+        )
+
     return StudentProgressOverviewOut(
         bloom_mastery=bloom_mastery,
         subject_summaries=subject_summaries,
@@ -81,7 +127,7 @@ async def get_my_progress(
             )
             for s in subject_summaries
         ],
-        trajectory=[TrajectoryPointOut(label="Now", mastery_percent=round(sum(b.percent or 0 for b in bloom_mastery) / len(bloom_mastery)))],
-        trajectory_gain_label="",
-        next_best_focus=NextBestFocusOut(label="", message=""),
+        trajectory=trajectory,
+        trajectory_gain_label=trajectory_gain_label,
+        next_best_focus=next_best_focus,
     )

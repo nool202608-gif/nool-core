@@ -4,10 +4,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from shared.errors import NotFoundError
 
-from src.api.deps import get_db_session, require_role
+from src.api.deps import get_db_session, require_feature, require_role
 from src.api.schemas.bloom import BloomScore
 from src.api.schemas.bloom_result import StudentTestBloomResultOut
-from src.domain.models import BloomLevel, Role, StudentTestResult, StudentTestResultBloomScore, User
+from src.domain.models import (
+    BloomLevel,
+    Feature,
+    Role,
+    StudentTestResult,
+    StudentTestResultBloomScore,
+    User,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["bloom-result"])
 
@@ -16,6 +23,7 @@ router = APIRouter(prefix="/api/v1", tags=["bloom-result"])
 async def get_bloom_result(
     test_id: str,
     user: User = Depends(require_role(Role.STUDENT)),
+    _feature: User = Depends(require_feature(Feature.IMPROVEMENT_ANALYSIS)),
     session: AsyncSession = Depends(get_db_session),
 ) -> StudentTestBloomResultOut:
     result = await session.execute(

@@ -9,6 +9,8 @@ from src.api.deps import get_current_app_user, get_current_user, get_db_session
 from src.api.schemas.profile import MeResponse, ProfileOut
 from src.domain.models import School, User
 from src.repositories import get_by_firebase_uid
+from src.repositories.subscription_repository import get_active_plan
+from src.services.feature_entitlements import effective_enabled_features
 from src.services.user_provisioning import clear_must_change_password_claim
 
 router = APIRouter(prefix="/api/v1", tags=["profile"])
@@ -31,9 +33,16 @@ async def get_me(
         return MeResponse(profile=None)
 
     school_name = ""
+    school_logo_data_uri = None
+    plan = None
     if app_user.school_id is not None:
-        result = await session.execute(select(School.name).where(School.id == app_user.school_id))
-        school_name = result.scalar_one_or_none() or ""
+        result = await session.execute(
+            select(School.name, School.logo_data_uri).where(School.id == app_user.school_id)
+        )
+        row = result.one_or_none()
+        if row is not None:
+            school_name, school_logo_data_uri = row
+        plan = await get_active_plan(session, app_user.school_id)
 
     return MeResponse(
         profile=ProfileOut(
@@ -41,7 +50,9 @@ async def get_me(
             role=app_user.role,
             display_name=app_user.display_name,
             school=school_name,
+            school_logo_data_uri=school_logo_data_uri,
             must_change_password=app_user.must_change_password,
+            enabled_features=effective_enabled_features(plan=plan),
         )
     )
 

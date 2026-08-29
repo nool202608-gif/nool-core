@@ -7,16 +7,20 @@ from ..base import Base
 from .ai_assessor import AiAssessorSession, AiAssessorSessionBloomLevel
 from .assistant import AssistantMessage, ChatRole
 from .bloom import BloomLevel
-from .curriculum import Chapter, SchoolCurriculum, Subject, Topic
-from .dataset import Dataset, SchoolDataset
+from .curriculum import Chapter, GradeSubject, SchoolCurriculum, Subject, Topic
+from .custom_question import CustomQuestion, QuestionType
+from .dataset import Dataset, DatasetQuestion, SchoolDataset
 from .foundation import (
     AuditLog,
+    Feature,
     Plan,
     Role,
     School,
     SchoolStatus,
     Subscription,
     SubscriptionStatus,
+    UpgradeRequest,
+    UpgradeRequestStatus,
     User,
     UserStatus,
 )
@@ -31,7 +35,9 @@ from .homework import (
     StudentHomeworkProgress,
     StudentHomeworkStatus,
 )
+from .import_job import ImportJob, ImportJobType
 from .improvement import TopicPerformance
+from .reporting import ReportConfiguration, ReportShare
 from .leaderboard import StudentPoints
 from .question_paper import (
     PaperDifficultyLevel,
@@ -47,7 +53,8 @@ from .question_paper import (
     QuestionPaperValidation,
 )
 from .retest import RetestAttempt, RetestBloomComparison, StudentRetestStatus
-from .roster import SchoolClass, StudentProfile, TeacherClassAssignment
+from .roster import SchoolClass, SchoolGrade, StudentProfile, TeacherClassAssignment
+from .support_ticket import SupportTicket, SupportTicketComment, TicketStatus
 from .test_result import StudentTestResult, StudentTestResultBloomScore
 from .voice_test import (
     AssignmentTargetMode,
@@ -66,16 +73,23 @@ __all__ = [
     "BloomLevel",
     "Chapter",
     "SchoolCurriculum",
+    "GradeSubject",
     "Subject",
     "Topic",
+    "CustomQuestion",
+    "QuestionType",
     "Dataset",
+    "DatasetQuestion",
     "SchoolDataset",
     "AuditLog",
+    "Feature",
     "Plan",
     "Role",
     "School",
     "SchoolStatus",
     "Subscription",
+    "UpgradeRequest",
+    "UpgradeRequestStatus",
     "SubscriptionStatus",
     "User",
     "UserStatus",
@@ -89,6 +103,10 @@ __all__ = [
     "StudentHomeworkProgress",
     "StudentHomeworkStatus",
     "TopicPerformance",
+    "ImportJob",
+    "ImportJobType",
+    "ReportConfiguration",
+    "ReportShare",
     "StudentPoints",
     "PaperDifficultyLevel",
     "QuestionPaper",
@@ -105,8 +123,12 @@ __all__ = [
     "RetestBloomComparison",
     "StudentRetestStatus",
     "SchoolClass",
+    "SchoolGrade",
     "StudentProfile",
     "TeacherClassAssignment",
+    "SupportTicket",
+    "SupportTicketComment",
+    "TicketStatus",
     "StudentTestResult",
     "StudentTestResultBloomScore",
     "AssignmentTargetMode",

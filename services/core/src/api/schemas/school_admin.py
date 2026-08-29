@@ -190,6 +190,33 @@ class UpdateClassStatusIn(CamelModel):
     status: UserStatus
 
 
+class SchoolGradeOut(CamelModel):
+    """The 'Class' level (e.g. "Class 10") - a school's Sections
+    (SchoolAdminClassOut, above - unrenamed on the wire for backward
+    compatibility with nool-apps) each belong to exactly one of these."""
+
+    id: str
+    grade: int
+    section_count: int
+    student_count: int
+    status: UserStatus
+
+
+class CreateGradeIn(CamelModel):
+    grade: int
+
+    @field_validator("grade")
+    @classmethod
+    def _grade_in_range(cls, value: int) -> int:
+        if not (MIN_GRADE <= value <= MAX_GRADE):
+            raise ValueError(f"Grade must be between {MIN_GRADE} and {MAX_GRADE}.")
+        return value
+
+
+class UpdateGradeStatusIn(CamelModel):
+    status: UserStatus
+
+
 class UpdateClassAssignmentsIn(CamelModel):
     assignments: list[ClassAssignmentOut]
 
@@ -203,6 +230,15 @@ class SubjectToggle(CamelModel):
 class SchoolCurriculumOut(CamelModel):
     board: str
     subjects: list[SubjectToggle]
+
+
+class GradeSubjectsOut(CamelModel):
+    grade_id: str
+    subjects: list[SubjectToggle]
+
+
+class UpdateGradeSubjectsIn(CamelModel):
+    subject_ids: list[str]
 
 
 class UpdateSchoolCurriculumIn(CamelModel):

@@ -62,7 +62,14 @@ class VoiceTestBloomLevel(Base):
 
 
 class VoiceTestTargetStudent(Base):
-    """Only populated when target_mode is SPECIFIC_STUDENTS."""
+    """The real per-student delivery list for every Test, regardless of
+    target_mode - every read path a student's own app uses to find "my
+    assigned tests" joins through this table. For SPECIFIC_STUDENTS these
+    rows come straight from the teacher's picked list; for WHOLE_CLASS
+    they're resolved from the class roster once, at creation time (see
+    voice_test.py's create_test) - either way, this table is always the
+    complete, queryable answer to "who was this test actually sent to."
+    """
 
     __tablename__ = "voice_test_target_students"
     __table_args__ = (UniqueConstraint("test_id", "student_id"),)

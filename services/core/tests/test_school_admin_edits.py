@@ -16,7 +16,6 @@ from src.api.schemas.admin_catalog import CreateSubjectIn
 from src.api.schemas.bloom import UpdateBloomDistributionIn
 from src.api.schemas.school_admin import (
     CreateClassIn,
-    CreateSchoolSubjectIn,
     CreateStudentIn,
     InviteTeacherIn,
     SendCredentialsEmailIn,
@@ -38,6 +37,7 @@ from src.domain.models import (
     Role,
     School,
     SchoolClass,
+    SchoolCurriculum,
     StudentTestResult,
     Subject,
     Subscription,
@@ -94,6 +94,27 @@ async def test_update_student_partial_update_only_changes_provided_fields(db_ses
     assert updated.guardian_name == "New Guardian"
     assert updated.display_name == "Original Name"  # untouched - not in the partial update
     assert updated.class_id == str(school_class.id)  # untouched
+
+
+async def test_get_school_curriculum_reflects_super_admin_assignment(db_session):
+    """School Admin's PUT /curriculum was removed - subject assignment is
+    now exclusively Super Admin's job (see school_admin.py's
+    get_school_curriculum docstring). This just confirms the read path
+    still reflects whatever Super Admin has assigned via SchoolCurriculum
+    directly, since School Admin has no write path to test against.
+    """
+    school = await _seed_school(db_session)
+    admin = await _seed_school_admin(db_session, school.id)
+    subject = Subject(name=f"Subject-{uuid.uuid4()}")
+    db_session.add(subject)
+    await db_session.flush()
+    db_session.add(SchoolCurriculum(school_id=school.id, subject_id=subject.id, enabled=True))
+    await db_session.flush()
+
+    result = await school_admin.get_school_curriculum(user=admin, session=db_session)
+
+    enabled_ids = {s.id for s in result.subjects if s.enabled}
+    assert enabled_ids == {str(subject.id)}
 
 
 def test_bloom_distribution_rejects_non_100_sum():
@@ -404,20 +425,6 @@ async def test_delete_school_class_removes_an_empty_class(db_session):
     assert created.id not in {c.id for c in listed.items}
 
 
-async def test_create_school_subject_adds_and_enables_a_new_subject(db_session):
-    school = await _seed_school(db_session)
-    admin = await _seed_school_admin(db_session, school.id)
-
-    created = await school_admin.create_school_subject(
-        CreateSchoolSubjectIn(name="Sanskrit"), user=admin, session=db_session,
-    )
-
-    assert created.name == "Sanskrit"
-    assert created.enabled is True
-    curriculum = await school_admin.get_school_curriculum(user=admin, session=db_session)
-    assert any(s.id == created.id and s.enabled for s in curriculum.subjects)
-
-
 async def test_school_analytics_mastery_trend_reflects_recent_test_results(db_session):
     school = await _seed_school(db_session)
     admin = await _seed_school_admin(db_session, school.id)
@@ -449,22 +456,6 @@ async def test_school_analytics_mastery_trend_reflects_recent_test_results(db_se
     assert len(result.mastery_trend) == 1
     assert result.mastery_trend[0].mastery_avg_percent == 80
     assert result.mastery_trend[0].test_count == 1
-
-
-async def test_create_school_subject_reuses_existing_name_case_insensitively(db_session):
-    school = await _seed_school(db_session)
-    admin = await _seed_school_admin(db_session, school.id)
-    existing = Subject(name="Geography")
-    db_session.add(existing)
-    await db_session.flush()
-
-    created = await school_admin.create_school_subject(
-        CreateSchoolSubjectIn(name="geography"), user=admin, session=db_session,
-    )
-
-    assert created.id == str(existing.id)
-    subjects = (await db_session.execute(select(Subject).where(Subject.name == "Geography"))).scalars().all()
-    assert len(subjects) == 1  # no duplicate catalog row
 
 
 async def test_request_subscription_upgrade_records_audit_log_without_smtp(db_session, monkeypatch):

@@ -191,7 +191,7 @@ async def test_question_bank_merges_paper_and_homework_sources_by_topic(db_sessi
     await db_session.flush()
 
     result = await school_oversight.list_school_question_bank(
-        source=None, topic=None, limit=50, offset=0, user=admin, session=db_session,
+        source=None, topic=None, collection_name=None, general_bank_only=False, limit=50, offset=0, user=admin, session=db_session,
     )
 
     assert result.total == 2
@@ -202,17 +202,17 @@ async def test_question_bank_merges_paper_and_homework_sources_by_topic(db_sessi
     assert by_source["HOMEWORK"].answer == "It happens in the thylakoid."
 
     filtered = await school_oversight.list_school_question_bank(
-        source=None, topic="basics", limit=50, offset=0, user=admin, session=db_session,
+        source=None, topic="basics", collection_name=None, general_bank_only=False, limit=50, offset=0, user=admin, session=db_session,
     )
     assert filtered.total == 1
     assert filtered.items[0].source == "HOMEWORK"
 
     case_insensitive = await school_oversight.list_school_question_bank(
-        source=None, topic="PHOTOSYNTHESIS", limit=50, offset=0, user=admin, session=db_session,
+        source=None, topic="PHOTOSYNTHESIS", collection_name=None, general_bank_only=False, limit=50, offset=0, user=admin, session=db_session,
     )
     assert case_insensitive.total == 2
 
     no_match = await school_oversight.list_school_question_bank(
-        source=None, topic="nonexistent topic", limit=50, offset=0, user=admin, session=db_session,
+        source=None, topic="nonexistent topic", collection_name=None, general_bank_only=False, limit=50, offset=0, user=admin, session=db_session,
     )
     assert no_match.total == 0

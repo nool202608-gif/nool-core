@@ -16,6 +16,7 @@ from src.api.routes import (
     assistant,
     bloom_result,
     curriculum,
+    custom_question,
     dataset,
     health,
     homework,
@@ -32,6 +33,7 @@ from src.api.routes import (
     student_dashboard,
     student_homework,
     student_retest,
+    support_ticket,
     teacher_dashboard,
     test_result,
     voice_test,
@@ -98,6 +100,8 @@ def create_app() -> FastAPI:
     app.include_router(admin_catalog.router)
     app.include_router(school_admin.router)
     app.include_router(school_oversight.router)
+    app.include_router(custom_question.router)
+    app.include_router(support_ticket.router)
 
     return app
 

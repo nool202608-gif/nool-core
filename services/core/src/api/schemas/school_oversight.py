@@ -98,6 +98,10 @@ class SchoolQuestionBankEntryOut(CamelModel):
     source: str
     source_name: str
     created_at: datetime | None
+    # Only meaningful for source="CUSTOM" - None for QUESTION_PAPER/
+    # HOMEWORK rows, which have no such concept. See
+    # CustomQuestion.collection_name's docstring.
+    collection_name: str | None = None
 
 
 class SchoolAuditLogEntryOut(CamelModel):
