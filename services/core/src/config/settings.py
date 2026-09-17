@@ -28,6 +28,18 @@ class CoreSettings(BaseServiceSettings):
     # still records to the audit log, it just isn't emailed anywhere.
     sales_email: str | None = None
 
+    # Base URL of the kg service (services/kg) - see src/services/kg_client.py.
+    # Blank-safe: only POST /admin/curriculum/sync-from-kg and Question
+    # Paper generation need it; every other route is unaffected if unset.
+    kg_service_url: str | None = None
+
+    # Base URL of the colearner service (services/colearner) - see
+    # src/services/colearner_client.py. Blank-safe: only the AI Assessor's
+    # WS stream (ai_assessor.py's stream_session) needs it; every other
+    # route is unaffected if unset (the WS closes with an error event
+    # instead of connecting to a real voice pipeline).
+    colearner_service_url: str | None = None
+
     @property
     def database_url(self) -> str:
         """Async SQLAlchemy connection string.

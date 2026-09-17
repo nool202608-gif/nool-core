@@ -12,6 +12,9 @@ class AssignedTestOut(CamelModel):
     id: str
     subject_id: str
     subject_label: str
+    # Which chapter this Test's win screen hands off to on the Journey map
+    # (see journey.py's GET /me/journey) once the student finishes it.
+    chapter_id: str
     title: str
     meta: str
     in_progress: bool

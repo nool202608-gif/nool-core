@@ -16,11 +16,9 @@ from src.api.schemas.bloom import BloomScore
 from src.api.schemas.school_admin import ClassBreakdownOut, MasteryTrendPointOut, SchoolAnalyticsOut
 from src.domain.models import (
     BloomLevel,
-    Homework,
     SchoolClass,
     StudentTestResult,
     StudentTestResultBloomScore,
-    TopicPerformance,
     VoiceTest,
 )
 
@@ -46,22 +44,18 @@ async def compute_school_analytics(session: AsyncSession, school_id: UUID | str)
         )
         mastery_avg = mastery_row.scalar_one_or_none()
 
-        improvement_row = await session.execute(
-            select(func.avg(TopicPerformance.after_percent - TopicPerformance.before_percent))
-            .join(Homework, Homework.id == TopicPerformance.homework_id)
-            .where(
-                Homework.class_id == c.id,
-                TopicPerformance.before_percent.is_not(None),
-                TopicPerformance.after_percent.is_not(None),
-            )
-        )
-        improvement_avg = improvement_row.scalar_one_or_none()
-
+        # improvement_percent has no real data source now that Retest (its
+        # only measurement event) is gone - this was already always 0 in
+        # practice (TopicPerformance, its old source, was never written by
+        # anything), so this is a behavior-identical cleanup, not a
+        # regression. A real "improvement over time" metric (e.g. comparing
+        # a student's earliest vs. most recent Test on the same chapter) is
+        # a separate, future analytics effort.
         class_breakdown.append(
             ClassBreakdownOut(
                 class_id=str(c.id), label=f"Class {c.grade} · {c.section}",
                 mastery_avg_percent=round(mastery_avg) if mastery_avg is not None else 0,
-                improvement_percent=round(improvement_avg) if improvement_avg is not None else 0,
+                improvement_percent=0,
             )
         )
 

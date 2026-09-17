@@ -88,12 +88,12 @@ The user changes their password on first login (`/change-password` in every app)
 | `voice_tests` (+ bloom_levels, target_students) | class_id, subject_id, chapter_id, topic_id?, duration_minutes, status | — |
 | `student_test_results` (+ bloom_scores) | test_id, student_id, mastery_percent | — |
 | `homework` (+ datasets, bloom_distribution, target_students, questions; `student_homework_progress`) | test_id, class_id, gap_topic, difficulty, status | — |
-| `topic_performance` | test_id, homework_id, topic_label, before/after_percent? | — |
-| `retest_attempts` (+ bloom_comparison) | homework_id, student_id, status, baseline/retest/improvement_percent? | — |
+| `practice_bank_entries` | student_id, source_homework_id, source_question_id, subject_id?, chapter_id?, topic_id?, bloom_level, text, answer | A standalone copy, not a live pointer to the source question — archived once a Homework's Q&A is confirmed complete. |
+| `student_chapter_progress` | student_id, chapter_id, stars, completed_at? | Drives the Journey chapter map; written only by `record_test_completion`, never re-run. |
 | `question_papers` (+ dataset_shares, chapters, topics, sections, bloom_distribution, difficulty_distribution, validation, questions) | school_id, created_by (FK users), name, exam_type, board, grade, status | — |
 | `student_points` | student_id (PK), points | Leaderboard basis. |
 | `assistant_messages` | teacher_id, role, text | Teacher-only chat. |
-| `ai_assessor_sessions` (+ bloom_levels) | student_id, test_id?, retest_attempt_id?, context_label, duration_seconds | — |
+| `ai_assessor_sessions` (+ bloom_levels) | student_id, test_id?, context_label, duration_seconds | — |
 
 ---
 
@@ -120,7 +120,7 @@ All business endpoints require a Firebase ID token (`Authorization: Bearer <toke
 - `GET/PUT /admin/schools/{id}/default-bloom-distribution`
 - `GET/POST/PATCH /admin/plans[/{id}]` — full CRUD
 - `GET/POST/PUT /admin/schools/{id}/subscription`
-- `GET /admin/analytics/platform` — real computed metrics (mastery, completion, improvement, Bloom breakdown), not stubbed
+- `GET /admin/analytics/platform` — real computed metrics (mastery, completion, Bloom breakdown), not stubbed; `improvementPercent` is always `0` — no real data source since Retest was removed (see `school_analytics.py`)
 
 **Super Admin — School Admins & Catalog**
 - `GET/POST /admin/school-admins`, `POST /admin/school-admins/invite`, `PATCH .../status`, `PATCH .../{id}` (edit), `POST .../{id}/reset-password`
@@ -141,7 +141,7 @@ All business endpoints require a Firebase ID token (`Authorization: Bearer <toke
 - `GET /school/analytics` — real computed metrics, school-scoped
 
 **School Admin — School-wide Oversight** (`school_oversight.py`, read-only, paginated `{items, total}`)
-- `GET /school/voice-tests` (`classId`, `teacherId`), `/school/homework` (`classId`), `/school/question-papers` (`subjectId`, `createdBy`), `/school/retest-progress` (`classId`), `/school/improvement` (`classId`), `/school/leaderboard`, `/school/audit-log`
+- `GET /school/voice-tests` (`classId`, `teacherId`), `/school/homework` (`classId`), `/school/question-papers` (`subjectId`, `createdBy`), `/school/leaderboard`, `/school/audit-log`
 
 **Teacher-facing** (`require_role(TEACHER)`)
 - Curriculum browse: `/subjects`, `/classes/{id}/subjects`, `/subjects/{id}/chapters`, `/chapters/{id}/topics`; dataset browse
@@ -150,12 +150,12 @@ All business endpoints require a Firebase ID token (`Authorization: Bearer <toke
 - Test Results: class / students / one student
 - Homework: create → generate → questions → edit/replace question → assign (full lifecycle)
 - Question Papers: DRAFT → generate → questions → finalize (same lifecycle shape), candidate-shuffle picker, section reordering
-- Retest Progress, Improvement (class/student), Teacher Dashboard, Assistant chat
+- Teacher Dashboard, Assistant chat
 
 **Student-facing** (`require_role(STUDENT)`)
 - `/me/dashboard`, `/me/assigned-tests[/{id}]`, `/me/tests/{id}/bloom-result`
-- `/me/homework/current` (+ context/questions/confirm-completion)
-- `/me/retest` (+ result submission), `/me/progress`, `/me/leaderboard`
+- `/me/homework/current` (+ context/questions/confirm-completion — confirming archives its questions into `/me/practice-bank`)
+- `/me/journey`, `/me/practice-bank`, `/me/progress`, `/me/leaderboard`
 
 **AI Assessor**
 - `POST /ai-assessor/sessions` (opens a session, returns a `wsUrl`)
@@ -190,8 +190,6 @@ Route groups: `(auth)` (login, unknown-profile), `(app)/teacher`, `(app)/student
 | Test results (class & per-student) | `GET /tests/{id}/results/...` | Real |
 | Question Paper authoring (incl. Bloom/difficulty mix editor) | `GET/POST /question-papers` | Real — always sends an explicit distribution, so the new school-level default is never actually exercised from this screen |
 | Homework assign/live/review | `GET/POST /homework` | Real |
-| Improvement (class/student) | `GET /tests/{id}/improvement/...` | Real |
-| Retest progress | `GET /homework/{id}/retest-progress` | Real |
 | Assistant chat | `GET/POST /assistant/messages` | Real transport; generation is the deterministic placeholder |
 | **Settings** (Notifications/Appearance/Language/About) | none | **Placeholder** — every row routes to a shared "coming soon" stub |
 
@@ -203,7 +201,8 @@ Route groups: `(auth)` (login, unknown-profile), `(app)/teacher`, `(app)/student
 | Assigned Tests | `GET /me/assigned-tests` | Real |
 | AI Assessor voice session | `POST /ai-assessor/sessions` + real `WebSocket` stream | Real |
 | Homework | `GET /me/homework/current` | Real |
-| Retest | `GET /me/retest` | Real |
+| Journey (chapter map) | `GET /me/journey` | Real |
+| Practice Bank | `GET /me/practice-bank` | Real |
 | Progress | `GET /me/progress` | Real |
 | Leaderboard | `GET /me/leaderboard` | Real |
 
@@ -225,7 +224,7 @@ Strapi-inspired design system: indigo accent, dense sortable tables, light sideb
 | `/subscription` | Plan details (name, renews date) + usage-vs-limit bars, "Unlimited" when null |
 | `/analytics` | Real school-scoped metrics |
 | `/question-defaults` | School's default Bloom/difficulty distribution (must sum to 100) |
-| `/activity/*` (tests, homework, question-papers, retests, leaderboard, audit-log) | Read-only paginated oversight tables |
+| `/activity/*` (tests, homework, question-papers, leaderboard, audit-log) | Read-only paginated oversight tables |
 | `/settings` | Self-service profile edit + proactive password change |
 | `/change-password` (forced) | First-login password change |
 

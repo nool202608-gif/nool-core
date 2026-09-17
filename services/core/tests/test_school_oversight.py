@@ -1,8 +1,8 @@
 """School-wide oversight endpoints (GET /school/voice-tests, /homework,
-/question-papers, /retest-progress, /improvement, /leaderboard) - real rows
-against the dev Postgres via the db_session fixture, same pattern as
-test_subscription_limits.py. Two things matter most here: no cross-school
-leakage, and pagination actually works.
+/question-papers, /leaderboard) - real rows against the dev Postgres via
+the db_session fixture, same pattern as test_subscription_limits.py. Two
+things matter most here: no cross-school leakage, and pagination actually
+works.
 """
 
 import uuid

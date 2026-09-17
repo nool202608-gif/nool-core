@@ -3,9 +3,9 @@
 real rows against the dev Postgres via db_session, same seed/assert shapes
 as test_school_oversight.py but calling the new `_as_admin` functions with
 an explicit school_id instead of relying on user.school_id. Covers, for
-each of the 8 routes: a basic list-returns-expected-shape test, a filter
-test for every filterable query param (this is what would catch a dropped
-`alias=` on a Query param), and cross-school isolation.
+each route: a basic list-returns-expected-shape test, a filter test for
+every filterable query param (this is what would catch a dropped `alias=`
+on a Query param), and cross-school isolation.
 """
 
 import uuid
@@ -23,13 +23,11 @@ from src.domain.models import (
     QuestionPaperQuestion,
     QuestionPaperStatus,
     QuestionPaperTopic,
-    RetestAttempt,
     Role,
     School,
     SchoolClass,
     StudentPoints,
     StudentProfile,
-    StudentRetestStatus,
     Subject,
     TestStatus,
     Topic,
@@ -335,187 +333,6 @@ async def test_list_school_question_papers_as_admin_no_cross_school_leakage(db_s
 
     assert result.total == 1
     assert result.items[0].name == "Paper A"
-
-
-# --- retest-progress ---------------------------------------------------------
-
-
-async def test_list_school_retest_progress_as_admin_basic_shape(db_session):
-    super_admin = await _seed_super_admin(db_session)
-    school = await _seed_school(db_session)
-    school_class, subject, chapter = await _seed_class_subject_chapter(db_session, school.id)
-    test = await _seed_voice_test(db_session, school_class, subject, chapter)
-    homework = Homework(
-        test_id=test.id, class_id=school_class.id, gap_topic="Gap topic",
-        gap_mastery_percent=40, total_questions=1, difficulty=HomeworkDifficulty.EASY,
-        target_mode=AssignmentTargetMode.WHOLE_CLASS, assigned_count=2,
-    )
-    db_session.add(homework)
-    await db_session.flush()
-    student = await _seed_student(db_session, school.id, school_class.id, "Student 1")
-    db_session.add(
-        RetestAttempt(homework_id=homework.id, student_id=student.id, status=StudentRetestStatus.COMPLETED)
-    )
-    await db_session.flush()
-
-    result = await admin.list_school_retest_progress_as_admin(
-        str(school.id), class_id=None, limit=50, offset=0, _=super_admin, session=db_session,
-    )
-
-    assert result.total == 1
-    assert result.items[0].completed_count == 1
-
-
-async def test_list_school_retest_progress_as_admin_class_id_filters(db_session):
-    super_admin = await _seed_super_admin(db_session)
-    school = await _seed_school(db_session)
-    class_a, subject_a, chapter_a = await _seed_class_subject_chapter(db_session, school.id)
-    class_b, subject_b, chapter_b = await _seed_class_subject_chapter(db_session, school.id)
-    test_a = await _seed_voice_test(db_session, class_a, subject_a, chapter_a)
-    test_b = await _seed_voice_test(db_session, class_b, subject_b, chapter_b)
-    db_session.add_all([
-        Homework(
-            test_id=test_a.id, class_id=class_a.id, gap_topic="A topic",
-            gap_mastery_percent=40, total_questions=1, difficulty=HomeworkDifficulty.EASY,
-            target_mode=AssignmentTargetMode.WHOLE_CLASS,
-        ),
-        Homework(
-            test_id=test_b.id, class_id=class_b.id, gap_topic="B topic",
-            gap_mastery_percent=40, total_questions=1, difficulty=HomeworkDifficulty.EASY,
-            target_mode=AssignmentTargetMode.WHOLE_CLASS,
-        ),
-    ])
-    await db_session.flush()
-
-    result = await admin.list_school_retest_progress_as_admin(
-        str(school.id), class_id=str(class_a.id), limit=50, offset=0, _=super_admin, session=db_session,
-    )
-
-    assert result.total == 1
-    assert result.items[0].gap_topic == "A topic"
-
-
-async def test_list_school_retest_progress_as_admin_no_cross_school_leakage(db_session):
-    super_admin = await _seed_super_admin(db_session)
-    school_a = await _seed_school(db_session)
-    school_b = await _seed_school(db_session)
-    class_a, subject_a, chapter_a = await _seed_class_subject_chapter(db_session, school_a.id)
-    class_b, subject_b, chapter_b = await _seed_class_subject_chapter(db_session, school_b.id)
-    test_a = await _seed_voice_test(db_session, class_a, subject_a, chapter_a)
-    test_b = await _seed_voice_test(db_session, class_b, subject_b, chapter_b)
-    db_session.add_all([
-        Homework(
-            test_id=test_a.id, class_id=class_a.id, gap_topic="A topic",
-            gap_mastery_percent=40, total_questions=1, difficulty=HomeworkDifficulty.EASY,
-            target_mode=AssignmentTargetMode.WHOLE_CLASS,
-        ),
-        Homework(
-            test_id=test_b.id, class_id=class_b.id, gap_topic="B topic",
-            gap_mastery_percent=40, total_questions=1, difficulty=HomeworkDifficulty.EASY,
-            target_mode=AssignmentTargetMode.WHOLE_CLASS,
-        ),
-    ])
-    await db_session.flush()
-
-    result = await admin.list_school_retest_progress_as_admin(
-        str(school_a.id), class_id=None, limit=50, offset=0, _=super_admin, session=db_session,
-    )
-
-    assert result.total == 1
-    assert result.items[0].gap_topic == "A topic"
-
-
-# --- improvement --------------------------------------------------------------
-
-
-async def test_list_school_improvement_as_admin_basic_shape(db_session):
-    super_admin = await _seed_super_admin(db_session)
-    school = await _seed_school(db_session)
-    school_class, subject, chapter = await _seed_class_subject_chapter(db_session, school.id)
-    test = await _seed_voice_test(db_session, school_class, subject, chapter)
-    homework = Homework(
-        test_id=test.id, class_id=school_class.id, gap_topic="Gap topic",
-        gap_mastery_percent=40, total_questions=1, difficulty=HomeworkDifficulty.EASY,
-        target_mode=AssignmentTargetMode.WHOLE_CLASS,
-    )
-    db_session.add(homework)
-    await db_session.flush()
-    student = await _seed_student(db_session, school.id, school_class.id, "Student 1")
-    db_session.add(
-        RetestAttempt(
-            homework_id=homework.id, student_id=student.id, status=StudentRetestStatus.RESULT_READY,
-            baseline_percent=40, retest_percent=80,
-        )
-    )
-    await db_session.flush()
-
-    result = await admin.list_school_improvement_as_admin(
-        str(school.id), class_id=None, limit=50, offset=0, _=super_admin, session=db_session,
-    )
-
-    assert result.total == 1
-    assert result.items[0].baseline_percent == 40
-    assert result.items[0].retest_percent == 80
-    assert result.items[0].improvement_percent == 40
-
-
-async def test_list_school_improvement_as_admin_class_id_filters(db_session):
-    super_admin = await _seed_super_admin(db_session)
-    school = await _seed_school(db_session)
-    class_a, subject_a, chapter_a = await _seed_class_subject_chapter(db_session, school.id)
-    class_b, subject_b, chapter_b = await _seed_class_subject_chapter(db_session, school.id)
-    test_a = await _seed_voice_test(db_session, class_a, subject_a, chapter_a)
-    test_b = await _seed_voice_test(db_session, class_b, subject_b, chapter_b)
-    db_session.add_all([
-        Homework(
-            test_id=test_a.id, class_id=class_a.id, gap_topic="A topic",
-            gap_mastery_percent=40, total_questions=1, difficulty=HomeworkDifficulty.EASY,
-            target_mode=AssignmentTargetMode.WHOLE_CLASS,
-        ),
-        Homework(
-            test_id=test_b.id, class_id=class_b.id, gap_topic="B topic",
-            gap_mastery_percent=40, total_questions=1, difficulty=HomeworkDifficulty.EASY,
-            target_mode=AssignmentTargetMode.WHOLE_CLASS,
-        ),
-    ])
-    await db_session.flush()
-
-    result = await admin.list_school_improvement_as_admin(
-        str(school.id), class_id=str(class_a.id), limit=50, offset=0, _=super_admin, session=db_session,
-    )
-
-    assert result.total == 1
-    assert result.items[0].gap_topic == "A topic"
-
-
-async def test_list_school_improvement_as_admin_no_cross_school_leakage(db_session):
-    super_admin = await _seed_super_admin(db_session)
-    school_a = await _seed_school(db_session)
-    school_b = await _seed_school(db_session)
-    class_a, subject_a, chapter_a = await _seed_class_subject_chapter(db_session, school_a.id)
-    class_b, subject_b, chapter_b = await _seed_class_subject_chapter(db_session, school_b.id)
-    test_a = await _seed_voice_test(db_session, class_a, subject_a, chapter_a)
-    test_b = await _seed_voice_test(db_session, class_b, subject_b, chapter_b)
-    db_session.add_all([
-        Homework(
-            test_id=test_a.id, class_id=class_a.id, gap_topic="A topic",
-            gap_mastery_percent=40, total_questions=1, difficulty=HomeworkDifficulty.EASY,
-            target_mode=AssignmentTargetMode.WHOLE_CLASS,
-        ),
-        Homework(
-            test_id=test_b.id, class_id=class_b.id, gap_topic="B topic",
-            gap_mastery_percent=40, total_questions=1, difficulty=HomeworkDifficulty.EASY,
-            target_mode=AssignmentTargetMode.WHOLE_CLASS,
-        ),
-    ])
-    await db_session.flush()
-
-    result = await admin.list_school_improvement_as_admin(
-        str(school_a.id), class_id=None, limit=50, offset=0, _=super_admin, session=db_session,
-    )
-
-    assert result.total == 1
-    assert result.items[0].gap_topic == "A topic"
 
 
 # --- leaderboard --------------------------------------------------------------

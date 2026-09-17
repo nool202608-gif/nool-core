@@ -38,6 +38,7 @@ from src.api.schemas.admin import (
 )
 from src.api.schemas.bloom import BloomDistributionOut, UpdateBloomDistributionIn
 from src.api.schemas.school_logo import SchoolLogoOut, UpdateSchoolLogoIn
+from src.api.schemas.voice_pipeline import UpdateVoicePipelineIn, VoicePipelineOut
 from src.api.schemas.common import ListEnvelope
 from src.api.schemas.features import FeaturesOut, UpdateFeaturesIn
 from src.api.schemas.import_job import ImportJobOut
@@ -100,11 +101,9 @@ from src.api.schemas.reporting import (
 from src.api.schemas.school_oversight import (
     SchoolAuditLogEntryOut,
     SchoolHomeworkOut,
-    SchoolImprovementOut,
     SchoolLeaderboardEntryOut,
     SchoolQuestionBankEntryOut,
     SchoolQuestionPaperOut,
-    SchoolRetestProgressOut,
     SchoolVoiceTestOut,
 )
 from src.domain.models import (
@@ -124,7 +123,6 @@ from src.domain.models import (
     QuestionPaperTopic,
     ReportConfiguration,
     ReportShare,
-    RetestAttempt,
     Role,
     School,
     SchoolClass,
@@ -135,7 +133,6 @@ from src.domain.models import (
     StudentHomeworkProgress,
     StudentPoints,
     StudentProfile,
-    StudentRetestStatus,
     StudentTestResult,
     Subject,
     Subscription,
@@ -405,6 +402,33 @@ async def update_school_logo(
     await session.commit()
     await session.refresh(school)
     return SchoolLogoOut(logo_data_uri=school.logo_data_uri)
+
+
+@router.get("/schools/{school_id}/voice-pipeline")
+async def get_school_voice_pipeline(
+    school_id: str,
+    _: User = Depends(require_role(Role.SUPER_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> VoicePipelineOut:
+    school = await _get_school(session, school_id)
+    return VoicePipelineOut(voice_pipeline=school.voice_pipeline)
+
+
+@router.put("/schools/{school_id}/voice-pipeline", summary="Set/clear which colearner pipeline a school uses")
+async def update_school_voice_pipeline(
+    school_id: str,
+    body: UpdateVoicePipelineIn,
+    actor: User = Depends(require_role(Role.SUPER_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> VoicePipelineOut:
+    school = await _get_school(session, school_id)
+    school.voice_pipeline = body.voice_pipeline
+    await audit_repository.record(
+        session, actor_id=actor.id, action="school.voice_pipeline_updated", target_type="school", target_id=school_id,
+    )
+    await session.commit()
+    await session.refresh(school)
+    return VoicePipelineOut(voice_pipeline=school.voice_pipeline)
 
 
 def _features_label(features: list[str] | None) -> str:
@@ -1443,7 +1467,6 @@ async def delete_student_as_admin(
     has_activity = (
         await _row_exists(session, StudentTestResult.student_id, student_user.id)
         or await _row_exists(session, StudentHomeworkProgress.student_id, student_user.id)
-        or await _row_exists(session, RetestAttempt.student_id, student_user.id)
         or await _row_exists(session, StudentPoints.student_id, student_user.id)
         or await _row_exists(session, VoiceTestTargetStudent.student_id, student_user.id)
     )
@@ -1909,6 +1932,7 @@ async def get_datasets_as_admin(
             question_count=d.question_count,
             description=d.description,
             enabled=d.id in enabled_ids,
+            restricted=d.restricted,
         )
         for d in datasets
     ]
@@ -2307,97 +2331,6 @@ async def list_school_question_papers_as_admin(
         )
         for paper, subject, creator in rows
     ]
-    return ListEnvelope(items=items, total=total)
-
-
-@router.get("/schools/{school_id}/retest-progress", summary="A school's retest progress (cross-tenant oversight)")
-async def list_school_retest_progress_as_admin(
-    school_id: str,
-    class_id: str | None = Query(default=None, alias="classId"),
-    limit: int = 50,
-    offset: int = 0,
-    _: User = Depends(require_role(Role.SUPER_ADMIN)),
-    session: AsyncSession = Depends(get_db_session),
-) -> ListEnvelope[SchoolRetestProgressOut]:
-    await _get_school(session, school_id)
-    base = (
-        select(Homework, SchoolClass)
-        .join(SchoolClass, SchoolClass.id == Homework.class_id)
-        .where(SchoolClass.school_id == school_id)
-    )
-    if class_id is not None:
-        base = base.where(Homework.class_id == class_id)
-
-    total = (await session.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
-    rows = (await session.execute(base.limit(limit).offset(offset))).all()
-
-    items = []
-    for hw, school_class in rows:
-        attempts = (
-            await session.execute(select(RetestAttempt).where(RetestAttempt.homework_id == hw.id))
-        ).scalars().all()
-        completed = [a for a in attempts if a.status == StudentRetestStatus.COMPLETED]
-        in_progress = [a for a in attempts if a.status == StudentRetestStatus.IN_PROGRESS]
-        not_started = [a for a in attempts if a.status == StudentRetestStatus.ASSIGNED]
-        items.append(
-            SchoolRetestProgressOut(
-                homework_id=str(hw.id),
-                class_label=_class_label(school_class),
-                gap_topic=hw.gap_topic,
-                assigned_count=hw.assigned_count,
-                completed_count=len(completed),
-                in_progress_count=len(in_progress),
-                not_started_count=len(not_started),
-            )
-        )
-    return ListEnvelope(items=items, total=total)
-
-
-@router.get("/schools/{school_id}/improvement", summary="A school's retest improvement (cross-tenant oversight)")
-async def list_school_improvement_as_admin(
-    school_id: str,
-    class_id: str | None = Query(default=None, alias="classId"),
-    limit: int = 50,
-    offset: int = 0,
-    _: User = Depends(require_role(Role.SUPER_ADMIN)),
-    session: AsyncSession = Depends(get_db_session),
-) -> ListEnvelope[SchoolImprovementOut]:
-    await _get_school(session, school_id)
-    base = (
-        select(Homework, SchoolClass, VoiceTest.id.label("test_id"))
-        .join(SchoolClass, SchoolClass.id == Homework.class_id)
-        .join(VoiceTest, VoiceTest.id == Homework.test_id)
-        .where(SchoolClass.school_id == school_id)
-    )
-    if class_id is not None:
-        base = base.where(Homework.class_id == class_id)
-
-    total = (await session.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
-    rows = (await session.execute(base.limit(limit).offset(offset))).all()
-
-    items = []
-    for hw, school_class, test_id in rows:
-        attempts = (
-            await session.execute(select(RetestAttempt).where(RetestAttempt.homework_id == hw.id))
-        ).scalars().all()
-        completed = [a for a in attempts if a.status == StudentRetestStatus.RESULT_READY]
-        baseline_vals = [a.baseline_percent for a in completed if a.baseline_percent is not None]
-        retest_vals = [a.retest_percent for a in completed if a.retest_percent is not None]
-        baseline_percent = round(sum(baseline_vals) / len(baseline_vals)) if baseline_vals else 0
-        retest_percent = round(sum(retest_vals) / len(retest_vals)) if retest_vals else 0
-        items.append(
-            SchoolImprovementOut(
-                test_id=str(test_id),
-                homework_id=str(hw.id),
-                class_label=_class_label(school_class),
-                gap_topic=hw.gap_topic,
-                baseline_percent=baseline_percent,
-                retest_percent=retest_percent,
-                improvement_percent=retest_percent - baseline_percent,
-                assigned_count=hw.assigned_count,
-                retested_count=len(completed),
-            )
-        )
     return ListEnvelope(items=items, total=total)
 
 

@@ -8,6 +8,7 @@ same pattern as test_reporting.py.
 
 import uuid
 
+from fastapi import BackgroundTasks
 from sqlalchemy import select
 
 from src.api.routes import assigned_test, voice_test
@@ -87,7 +88,7 @@ async def test_whole_class_target_resolves_current_roster_at_creation_time(db_se
         topic_id=str(topic.id), bloom_levels=[BloomLevel.UNDERSTAND], duration_minutes=20,
         completion_window_hours=48, target=AssignmentTarget(mode=AssignmentTargetMode.WHOLE_CLASS),
     )
-    result = await voice_test.create_test(body, user=teacher, session=db_session)
+    result = await voice_test.create_test(body, background_tasks=BackgroundTasks(), user=teacher, session=db_session)
 
     assert result.assigned_count == 2
 
@@ -121,7 +122,7 @@ async def test_specific_students_target_still_only_delivers_to_the_picked_studen
         completion_window_hours=48,
         target=AssignmentTarget(mode=AssignmentTargetMode.SPECIFIC_STUDENTS, student_ids=[str(picked.id)]),
     )
-    result = await voice_test.create_test(body, user=teacher, session=db_session)
+    result = await voice_test.create_test(body, background_tasks=BackgroundTasks(), user=teacher, session=db_session)
 
     assert result.assigned_count == 1
 

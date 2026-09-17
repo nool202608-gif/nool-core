@@ -32,13 +32,13 @@ Schools, Teachers, Students, Classes, Curriculum (Subjects/Chapters/Topics), Dat
 
 Voice Tests, Test Results
 
-Homework, Retest Progress, Improvement
+Homework
 
 Question Papers
 
 Teacher Dashboard, Assistant
 
-Student Dashboard, Assigned Tests, AI Assessor sessions, Homework/Retest/Progress/Leaderboard (student-facing)
+Student Dashboard, Assigned Tests, AI Assessor sessions, Homework/Journey/Practice Bank/Progress/Leaderboard (student-facing)
 
 Super Admin (schools, plans, subscriptions, platform analytics, School Admin management)
 
@@ -292,9 +292,9 @@ Test Results
 
 Homework
 
-Retests
+Journey
 
-Improvement
+Practice Bank
 
 Question Papers
 

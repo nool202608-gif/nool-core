@@ -12,7 +12,6 @@ class StreakDayState(str, Enum):
 class PendingActivityKind(str, Enum):
     TEST = "TEST"
     HOMEWORK = "HOMEWORK"
-    RETEST = "RETEST"
 
 
 class StreakDayOut(CamelModel):

@@ -28,13 +28,15 @@ from src.domain.models import (
     Role,
     School,
     SchoolClass,
+    StudentHomeworkProgress,
+    StudentProfile,
     TestStatus,
     User,
     VoiceTest,
 )
 from src.repositories.lookups import get_homework_in_school
+from src.services import homework_content_resolver
 from src.services.bloom_defaults import resolve_bloom_targets
-from src.services.content_generator import get_content_generator
 
 router = APIRouter(prefix="/api/v1", tags=["homework"])
 
@@ -158,14 +160,23 @@ async def generate_homework(
 ) -> HomeworkOut:
     hw = await get_homework_in_school(session, homework_id, user.school_id)
 
-    distribution = await session.execute(
-        select(HomeworkBloomDistribution).where(HomeworkBloomDistribution.homework_id == hw.id)
-    )
-    bloom_levels = [d.bloom_level for d in distribution.scalars().all()]
+    distribution_rows = (
+        await session.execute(
+            select(HomeworkBloomDistribution).where(HomeworkBloomDistribution.homework_id == hw.id)
+        )
+    ).scalars().all()
+    bloom_distribution = {d.bloom_level: d.value for d in distribution_rows}
 
-    generator = get_content_generator()
-    questions = generator.generate_questions(
-        topic=hw.gap_topic or "this topic", bloom_levels=bloom_levels, count=hw.total_questions
+    test = await session.get(VoiceTest, hw.test_id)
+    questions = await homework_content_resolver.generate_questions(
+        session,
+        chapter_id=test.chapter_id,
+        subject_id=test.subject_id,
+        class_id=test.class_id,
+        topic_id=test.topic_id,
+        topic=hw.gap_topic or "this topic",
+        bloom_distribution=bloom_distribution,
+        count=hw.total_questions,
     )
     dataset_row = await session.execute(
         select(HomeworkDataset.dataset_id).where(HomeworkDataset.homework_id == hw.id).limit(1)
@@ -302,8 +313,13 @@ async def replace_homework_question(
     if question is None:
         raise NotFoundError(f'No question "{question_id}" on this Homework.')
 
-    generator = get_content_generator()
-    candidates = generator.generate_replacement_candidates(
+    test = await session.get(VoiceTest, hw.test_id)
+    candidates = await homework_content_resolver.generate_replacement_candidates(
+        session,
+        chapter_id=test.chapter_id,
+        subject_id=test.subject_id,
+        class_id=test.class_id,
+        topic_id=test.topic_id,
         topic=hw.gap_topic or "this topic",
         bloom_level=question.bloom_level,
         exclude_text=question.text,
@@ -323,14 +339,41 @@ async def assign_homework(
     _feature: User = Depends(require_feature(Feature.HOMEWORK)),
     session: AsyncSession = Depends(get_db_session),
 ) -> HomeworkOut:
+    """Fans out to a real `StudentHomeworkProgress` row per targeted
+    student - this used to only ever write `HomeworkTargetStudent` (and
+    only for SPECIFIC_STUDENTS, never WHOLE_CLASS), so
+    GET /me/homework/current - which reads StudentHomeworkProgress, not
+    HomeworkTargetStudent - had nothing to find for any student, on any
+    Homework, regardless of target mode. Same missing-fan-out shape as
+    VoiceTest's WHOLE_CLASS targeting (see test_completion.py's
+    docstring) - fixed here for real rather than patched around.
+    """
     hw = await get_homework_in_school(session, homework_id, user.school_id)
     hw.target_mode = body.target.mode
     hw.completion_window_hours = body.completion_window_hours
     hw.status = HomeworkStatus.ASSIGNED
 
     if body.target.mode == AssignmentTargetMode.SPECIFIC_STUDENTS:
-        for student_id in body.target.student_ids or []:
+        target_student_ids = list(body.target.student_ids or [])
+        for student_id in target_student_ids:
             session.add(HomeworkTargetStudent(homework_id=hw.id, student_id=student_id))
+    else:
+        roster = await session.execute(
+            select(StudentProfile.user_id).where(StudentProfile.class_id == hw.class_id)
+        )
+        target_student_ids = [row[0] for row in roster.all()]
+
+    existing = await session.execute(
+        select(StudentHomeworkProgress.student_id).where(
+            StudentHomeworkProgress.homework_id == hw.id
+        )
+    )
+    already_has_progress = {row[0] for row in existing.all()}
+    for student_id in target_student_ids:
+        if student_id not in already_has_progress:
+            session.add(StudentHomeworkProgress(homework_id=hw.id, student_id=student_id))
+
+    hw.assigned_count = len(target_student_ids)
 
     await session.commit()
     await session.refresh(hw)

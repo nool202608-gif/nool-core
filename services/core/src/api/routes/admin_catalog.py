@@ -23,6 +23,8 @@ from src.api.schemas.admin_catalog import (
     DatasetOut,
     DatasetQuestionOut,
     SubjectOut,
+    SyncFromKgOut,
+    SyncFromKgResultOut,
     TopicOut,
     UpdateChapterIn,
     UpdateDatasetIn,
@@ -31,8 +33,9 @@ from src.api.schemas.admin_catalog import (
     UpdateTopicIn,
 )
 from src.api.schemas.common import ListEnvelope
-from src.domain.models import Chapter, Dataset, DatasetQuestion, QuestionType, Role, Subject, Topic, User
+from src.domain.models import Chapter, Dataset, DatasetQuestion, DatasetType, QuestionType, Role, Subject, Topic, User
 from src.repositories import audit_repository
+from src.services import kg_client
 
 router = APIRouter(prefix="/api/v1/admin", tags=["admin-catalog"])
 
@@ -265,6 +268,7 @@ async def _dataset_out(session: AsyncSession, dataset: Dataset) -> DatasetOut:
         question_count=real_count if real_count > 0 else dataset.question_count,
         description=dataset.description,
         subject_id=str(dataset.subject_id) if dataset.subject_id else None,
+        board=dataset.board, grade=dataset.grade, restricted=dataset.restricted, type=dataset.type,
     )
 
 
@@ -286,7 +290,8 @@ async def create_dataset(
 ) -> DatasetOut:
     dataset = Dataset(
         name=body.name, question_count=body.question_count, description=body.description,
-        subject_id=body.subject_id,
+        subject_id=body.subject_id, board=body.board, grade=body.grade, restricted=body.restricted,
+        type=body.type,
     )
     session.add(dataset)
     await session.flush()
@@ -332,6 +337,14 @@ async def update_dataset(
         dataset.description = body.description
     if "subject_id" in body.model_fields_set:
         dataset.subject_id = body.subject_id
+    if "board" in body.model_fields_set:
+        dataset.board = body.board
+    if "grade" in body.model_fields_set:
+        dataset.grade = body.grade
+    if body.restricted is not None:
+        dataset.restricted = body.restricted
+    if body.type is not None:
+        dataset.type = body.type
     await audit_repository.record(
         session, actor_id=actor.id, action="dataset.updated", target_type="dataset", target_id=dataset_id
     )
@@ -472,3 +485,93 @@ async def delete_dataset_question(
     )
     await session.commit()
     return {"deleted": True}
+
+
+# ---- Knowledge Graph Sync --------------------------------------------------
+
+async def _sync_one_dataset_from_kg(
+    session: AsyncSession, actor: User, dataset: Dataset, subject: Subject
+) -> SyncFromKgResultOut:
+    """One Dataset's own sync - a Dataset like "10th Science" *is* one KG
+    Curriculum root (board+grade+subject), so each dataset pulls and
+    upserts its own chapters/topics, tagged with *its* grade (Chapter.grade)
+    so a second dataset under the same Subject (e.g. "9th Science") never
+    merges into the same flat, ungraded chapter list. Idempotent via kg_ref,
+    same as before - safe to re-run.
+    """
+    tree = await kg_client.get_curriculum_tree(board=dataset.board, grade=dataset.grade, subject=subject.name)
+
+    chapters_synced = 0
+    topics_synced = 0
+    for chapter_data in tree["chapters"]:
+        result = await session.execute(select(Chapter).where(Chapter.kg_ref == chapter_data["ref"]))
+        chapter = result.scalar_one_or_none()
+        if chapter is None:
+            chapter = Chapter(kg_ref=chapter_data["ref"], subject_id=subject.id)
+            session.add(chapter)
+        chapter.subject_id = subject.id
+        chapter.name = chapter_data["name"]
+        chapter.order_index = chapter_data["number"]
+        chapter.grade = dataset.grade
+        await session.flush()
+        chapters_synced += 1
+
+        for topic_data in chapter_data["topics"]:
+            result = await session.execute(select(Topic).where(Topic.kg_ref == topic_data["ref"]))
+            topic = result.scalar_one_or_none()
+            if topic is None:
+                topic = Topic(kg_ref=topic_data["ref"], chapter_id=chapter.id)
+                session.add(topic)
+            topic.chapter_id = chapter.id
+            topic.name = topic_data["name"]
+            topics_synced += 1
+
+    await audit_repository.record(
+        session, actor_id=actor.id, action="curriculum.synced_from_kg",
+        target_type="dataset", target_id=str(dataset.id),
+        detail=f"{chapters_synced} chapters, {topics_synced} topics",
+    )
+    return SyncFromKgResultOut(
+        dataset_id=str(dataset.id), dataset_name=dataset.name, subject=subject.name,
+        board=dataset.board, grade=dataset.grade,
+        chapters_synced=chapters_synced, topics_synced=topics_synced,
+    )
+
+
+@router.post("/curriculum/sync-from-kg")
+async def sync_curriculum_from_kg(
+    actor: User = Depends(require_role(Role.SUPER_ADMIN)),
+    session: AsyncSession = Depends(get_db_session),
+) -> SyncFromKgOut:
+    """Pulls the current curriculum tree from the kg service (Neo4j-backed,
+    built from the ingested NCERT textbook) and upserts Chapter/Topic under
+    the right Subject - replacing hand-typed rows with the real thing:
+    correct names, correct chapter order (Chapter.order_index), and real
+    N.N topic structure.
+
+    Runs once per Dataset of type PRIMARY_CONTENT that names a real KG root
+    (board+grade+subject_id all set) - a Dataset *is* that root (see
+    Dataset's docstring), so there is no single "the" curriculum to sync
+    anymore once more than one board/grade/subject combination has been
+    ingested. A QA-type dataset is never a sync target, even if it
+    happens to have board/grade/subject_id set - see DatasetType's
+    docstring. An empty result list is a legitimate outcome (no
+    PRIMARY_CONTENT dataset names a KG root yet), not an error.
+    """
+    result = await session.execute(
+        select(Dataset).where(
+            Dataset.type == DatasetType.PRIMARY_CONTENT,
+            Dataset.subject_id.is_not(None), Dataset.board.is_not(None), Dataset.grade.is_not(None)
+        )
+    )
+    datasets = result.scalars().all()
+
+    results: list[SyncFromKgResultOut] = []
+    for dataset in datasets:
+        subject = await session.get(Subject, dataset.subject_id)
+        if subject is None:
+            continue
+        results.append(await _sync_one_dataset_from_kg(session, actor, dataset, subject))
+
+    await session.commit()
+    return SyncFromKgOut(results=results)

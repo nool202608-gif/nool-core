@@ -8,13 +8,27 @@ RESULTS_READY` gate made "generate follow-up Homework from test gaps"
 unreachable in production - only ever exercised via hand-seeded test
 fixtures.
 
+On top of that, also fans out to homework_autogen.auto_generate_homework -
+per product direction, a student's own completed session is their
+"learning path," and Homework is the automatic next step on it rather than
+something that waits on a teacher noticing the result and running the
+manual generate/review/assign flow (homework.py still has that flow,
+unchanged, for whole-class intervention).
+
+Also upserts StudentChapterProgress for the Test's chapter - the "Journey"
+chapter map (src/api/routes/journey.py) reads that table to decide which
+chapters are DONE/CURRENT/LOCKED, and before this fix nothing anywhere
+ever wrote to it, so no chapter could ever advance past the first no
+matter how many Tests a student completed. Stars are computed via
+stars.py's shared threshold function - the same one nool-apps'
+computeSessionReward.ts uses client-side for the win screen's star
+reveal, so the number the student sees there matches what Journey stores.
+
 `mastery_percent` is a completion-rate placeholder (percent of questions
-answered), the same deterministic, honesty-first formula
-student_retest.py's process_retest_result already uses for retest_percent
-- not a real correctness grade, since no LLM/grading vendor exists yet
-(see content_generator.py's docstring). Points awarded follow the same
-principle: 10 points per question actually answered, a real participation
-signal rather than a synthesized "score."
+answered), an honesty-first formula given no LLM/grading vendor exists yet
+(see content_generator.py's docstring) - not a real correctness grade.
+Points awarded follow the same principle: 10 points per question actually
+answered, a real participation signal rather than a synthesized "score."
 
 VoiceTest.status moves straight to RESULTS_READY, collapsing the
 COMPLETED/RESULTS_PROCESSING steps the model's docstring describes as
@@ -30,18 +44,22 @@ into a real count, a distinct piece of work).
 """
 
 import uuid
+from datetime import datetime, timezone
 
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.domain.models import (
     BloomLevel,
+    StudentChapterProgress,
     StudentPoints,
     StudentTestResult,
     StudentTestResultBloomScore,
     TestStatus,
     VoiceTest,
 )
+from src.services.homework_autogen import auto_generate_homework
+from src.services.stars import stars_for_mastery_percent
 
 POINTS_PER_ANSWERED_QUESTION = 10
 
@@ -54,8 +72,18 @@ async def record_test_completion(
     answered: int,
     total_questions: int,
     bloom_levels: list[BloomLevel],
+    mastery_percent: int | None = None,
+    bloom_scores: dict[BloomLevel, int] | None = None,
 ) -> None:
-    mastery_percent = round(100 * answered / total_questions) if total_questions else 0
+    """`mastery_percent`/`bloom_scores` - real per-level scores from
+    evaluation_service.evaluate_colearner_session(...), passed by
+    ai_assessor.py's stream_session when colearner's report scored the
+    session. When omitted (any other/older caller, or a report that didn't
+    score), falls back to the original completion-rate placeholder below -
+    unchanged, non-breaking.
+    """
+    if mastery_percent is None:
+        mastery_percent = round(100 * answered / total_questions) if total_questions else 0
 
     existing = await session.execute(
         select(StudentTestResult).where(
@@ -77,9 +105,10 @@ async def record_test_completion(
         )
     )
     for level in bloom_levels or [BloomLevel.UNDERSTAND]:
+        level_percent = bloom_scores.get(level, mastery_percent) if bloom_scores else mastery_percent
         session.add(
             StudentTestResultBloomScore(
-                student_test_result_id=result_row.id, bloom_level=level, percent=mastery_percent
+                student_test_result_id=result_row.id, bloom_level=level, percent=level_percent
             )
         )
 
@@ -97,3 +126,33 @@ async def record_test_completion(
             session.add(StudentPoints(student_id=student_id, points=awarded))
         else:
             points_row.points += awarded
+
+        if test is not None:
+            await auto_generate_homework(
+                session,
+                test=test,
+                student_id=student_id,
+                mastery_percent=mastery_percent,
+                bloom_levels=bloom_levels,
+            )
+
+            chapter_progress_result = await session.execute(
+                select(StudentChapterProgress).where(
+                    StudentChapterProgress.student_id == student_id,
+                    StudentChapterProgress.chapter_id == test.chapter_id,
+                )
+            )
+            chapter_progress = chapter_progress_result.scalar_one_or_none()
+            stars = stars_for_mastery_percent(mastery_percent)
+            if chapter_progress is None:
+                session.add(
+                    StudentChapterProgress(
+                        student_id=student_id,
+                        chapter_id=test.chapter_id,
+                        stars=stars,
+                        completed_at=datetime.now(timezone.utc),
+                    )
+                )
+            else:
+                chapter_progress.stars = stars
+                chapter_progress.completed_at = datetime.now(timezone.utc)

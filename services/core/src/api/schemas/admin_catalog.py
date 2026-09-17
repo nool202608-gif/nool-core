@@ -2,7 +2,7 @@ from datetime import datetime
 
 from pydantic import model_validator
 
-from src.domain.models import BloomLevel, QuestionType
+from src.domain.models import BloomLevel, DatasetType, QuestionType
 
 from .common import CamelModel
 
@@ -20,6 +20,24 @@ class CreateSubjectIn(CamelModel):
 
 class UpdateSubjectIn(CamelModel):
     name: str
+
+
+class SyncFromKgResultOut(CamelModel):
+    dataset_id: str
+    dataset_name: str
+    subject: str
+    board: str
+    grade: int
+    chapters_synced: int
+    topics_synced: int
+
+
+class SyncFromKgOut(CamelModel):
+    # One entry per Dataset that names a KG root (board+grade+subject_id
+    # all set) - a Dataset like "10th Science" IS that root, so syncing is
+    # inherently per-dataset now, not a single hardcoded pull. Empty is a
+    # legitimate outcome (no dataset names a KG root yet), not an error.
+    results: list[SyncFromKgResultOut]
 
 
 class ChapterOut(CamelModel):
@@ -59,6 +77,17 @@ class DatasetOut(CamelModel):
     question_count: int
     description: str
     subject_id: str | None = None
+    # Which kg-service Curriculum root this dataset corresponds to - see
+    # Dataset's docstring. Null until a Super Admin sets them.
+    board: str | None = None
+    grade: int | None = None
+    # False (the default catalog) or True (hidden unless a school
+    # explicitly enables it) - see Dataset.restricted's docstring.
+    restricted: bool = False
+    # QA (a hand-curated question/answer bank) or PRIMARY_CONTENT (raw
+    # ingested source content backing a KG Curriculum root) - see
+    # DatasetType's docstring.
+    type: DatasetType = DatasetType.QA
 
 
 class CreateDatasetIn(CamelModel):
@@ -66,6 +95,10 @@ class CreateDatasetIn(CamelModel):
     question_count: int
     description: str
     subject_id: str | None = None
+    board: str | None = None
+    grade: int | None = None
+    restricted: bool = False
+    type: DatasetType = DatasetType.QA
 
 
 class UpdateDatasetIn(CamelModel):
@@ -73,6 +106,10 @@ class UpdateDatasetIn(CamelModel):
     question_count: int | None = None
     description: str | None = None
     subject_id: str | None = None
+    board: str | None = None
+    grade: int | None = None
+    restricted: bool | None = None
+    type: DatasetType | None = None
 
 
 class DatasetQuestionOut(CamelModel):

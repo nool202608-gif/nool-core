@@ -9,7 +9,9 @@ from .assistant import AssistantMessage, ChatRole
 from .bloom import BloomLevel
 from .curriculum import Chapter, GradeSubject, SchoolCurriculum, Subject, Topic
 from .custom_question import CustomQuestion, QuestionType
-from .dataset import Dataset, DatasetQuestion, SchoolDataset
+from .dataset import Dataset, DatasetQuestion, DatasetType, SchoolDataset
+from .gamification import StudentDailyGoalCompletion, StudentGamification
+from .journey import StudentChapterProgress
 from .foundation import (
     AuditLog,
     Feature,
@@ -36,7 +38,7 @@ from .homework import (
     StudentHomeworkStatus,
 )
 from .import_job import ImportJob, ImportJobType
-from .improvement import TopicPerformance
+from .practice_bank import PracticeBankEntry
 from .reporting import ReportConfiguration, ReportShare
 from .leaderboard import StudentPoints
 from .question_paper import (
@@ -52,7 +54,6 @@ from .question_paper import (
     QuestionPaperTopic,
     QuestionPaperValidation,
 )
-from .retest import RetestAttempt, RetestBloomComparison, StudentRetestStatus
 from .roster import SchoolClass, SchoolGrade, StudentProfile, TeacherClassAssignment
 from .support_ticket import SupportTicket, SupportTicketComment, TicketStatus
 from .test_result import StudentTestResult, StudentTestResultBloomScore
@@ -80,7 +81,11 @@ __all__ = [
     "QuestionType",
     "Dataset",
     "DatasetQuestion",
+    "DatasetType",
     "SchoolDataset",
+    "StudentDailyGoalCompletion",
+    "StudentGamification",
+    "StudentChapterProgress",
     "AuditLog",
     "Feature",
     "Plan",
@@ -102,9 +107,9 @@ __all__ = [
     "HomeworkTargetStudent",
     "StudentHomeworkProgress",
     "StudentHomeworkStatus",
-    "TopicPerformance",
     "ImportJob",
     "ImportJobType",
+    "PracticeBankEntry",
     "ReportConfiguration",
     "ReportShare",
     "StudentPoints",
@@ -119,9 +124,6 @@ __all__ = [
     "QuestionPaperStatus",
     "QuestionPaperTopic",
     "QuestionPaperValidation",
-    "RetestAttempt",
-    "RetestBloomComparison",
-    "StudentRetestStatus",
     "SchoolClass",
     "SchoolGrade",
     "StudentProfile",

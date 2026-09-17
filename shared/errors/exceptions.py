@@ -45,7 +45,7 @@ class ForbiddenError(AppError):
 class ConflictError(AppError):
     """The request is well-formed, but the resource's current state doesn't
     permit it - e.g. scheduling a Test that isn't in a schedulable state,
-    or attempting a Retest a second time.
+    or confirming Homework completion that isn't in REVIEW.
     """
 
     code = "CONFLICT"

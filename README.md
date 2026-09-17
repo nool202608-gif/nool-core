@@ -11,7 +11,7 @@ Backend foundation (Phase 1) is done - repository structure, Docker
 infrastructure, service skeletons, health checks, configuration, logging,
 error handling, testing foundation. Phase 2 is in progress: the full
 product API in Core - Schools, Teachers, Students, Classes, Curriculum,
-Voice Tests, Test Results, Homework, Retests, Improvement, Question Papers,
+Voice Tests, Test Results, Homework, Journey, Practice Bank, Question Papers,
 Dashboards, Assistant, AI Assessor sessions, Leaderboard, Super Admin, and
 School Admin. See `CLAUDE.md` for the full scope and `docs/ARCHITECTURE.md`
 for how the pieces fit together.

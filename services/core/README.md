@@ -1,7 +1,7 @@
 # Core Service
 
 Owns the product domain: Schools, Teachers, Students, Classes, Curriculum,
-Voice Tests, Test Results, Homework, Retests, Improvement, Question Papers,
+Voice Tests, Test Results, Homework, Journey, Practice Bank, Question Papers,
 Dashboards, Assistant, AI Assessor sessions, Leaderboard, and the Super
 Admin / School Admin surfaces - the full API contract defined by nool-app's
 `spec/docs/api-reference.html` (and the `services/domain/`/`types/domain/`

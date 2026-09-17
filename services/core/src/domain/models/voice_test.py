@@ -1,9 +1,9 @@
 import uuid
 from enum import Enum
 
-from sqlalchemy import ForeignKey, Integer, UniqueConstraint
+from sqlalchemy import ForeignKey, Integer, Text, UniqueConstraint
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..base import Base
@@ -48,6 +48,14 @@ class VoiceTest(IdMixin, TimestampMixin, Base):
     )
     assigned_count: Mapped[int] = mapped_column(Integer, default=0)
     completed_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Both NULL until generation succeeds (see voice_test.py's create_test) -
+    # a KG/LLM failure at creation time never blocks the test itself, it
+    # just leaves these unset. When unset, the AI Assessor session falls
+    # back to colearner's own hardcoded generic defaults (see
+    # services/colearner/src/services/chained_service.py's DEFAULT_CONTEXT)
+    # rather than failing the session.
+    reference_questions: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    textbook_context: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class VoiceTestBloomLevel(Base):

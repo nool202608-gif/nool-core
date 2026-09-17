@@ -11,12 +11,10 @@ from .mixins import IdMixin, TimestampMixin
 
 
 class AiAssessorSession(IdMixin, TimestampMixin, Base):
-    """Powers both the Test and Retest voice conversation - one session
-    contract reused for either (see services/voice/AiAssessorSession.ts).
-    Exactly one of test_id/retest_attempt_id is set. The realtime
-    conversation itself (WS handler) is driven by a deterministic
-    ContentGenerator, not a real voice/LLM vendor - see CLAUDE.md's
-    "Current Goal".
+    """One live AI Assessor voice conversation tied to a VoiceTest (see
+    services/voice/AiAssessorSession.ts). The realtime conversation itself
+    (WS handler) is driven by a deterministic ContentGenerator, not a real
+    voice/LLM vendor - see CLAUDE.md's "Current Goal".
     """
 
     __tablename__ = "ai_assessor_sessions"
@@ -24,9 +22,6 @@ class AiAssessorSession(IdMixin, TimestampMixin, Base):
     student_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id"))
     test_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("voice_tests.id"), nullable=True
-    )
-    retest_attempt_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("retest_attempts.id"), nullable=True
     )
     context_label: Mapped[str] = mapped_column(String)
     duration_seconds: Mapped[int] = mapped_column(Integer)

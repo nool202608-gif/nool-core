@@ -47,28 +47,6 @@ class SchoolQuestionPaperOut(CamelModel):
     created_at: datetime
 
 
-class SchoolRetestProgressOut(CamelModel):
-    homework_id: str
-    class_label: str
-    gap_topic: str
-    assigned_count: int
-    completed_count: int
-    in_progress_count: int
-    not_started_count: int
-
-
-class SchoolImprovementOut(CamelModel):
-    test_id: str
-    homework_id: str
-    class_label: str
-    gap_topic: str
-    baseline_percent: int
-    retest_percent: int
-    improvement_percent: int
-    assigned_count: int
-    retested_count: int
-
-
 class SchoolLeaderboardEntryOut(CamelModel):
     student_id: str
     display_name: str

@@ -13,7 +13,7 @@ from .mixins import IdMixin, TimestampMixin
 
 class QuestionPaperStatus(str, Enum):
     """DRAFT -> GENERATING -> REVIEW -> FINALIZED, or VALIDATION_FAILED
-    off GENERATING. Independent of the Test/Homework/Retest loop - a
+    off GENERATING. Independent of the Test/Homework learning loop - a
     QuestionPaper never references a VoiceTest.
     """
 

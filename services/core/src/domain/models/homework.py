@@ -4,7 +4,7 @@ from enum import Enum
 
 from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Text, UniqueConstraint
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from ..base import Base
@@ -58,6 +58,20 @@ class Homework(IdMixin, Base):
     )
     assigned_count: Mapped[int] = mapped_column(Integer, default=0)
     completed_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # Real, LLM-generated "why this Homework, and how to close the gap" -
+    # see src/services/homework_insights.py. Nullable/lazily filled on the
+    # first GET /me/homework/{id}/context (see student_homework.py) rather
+    # than at creation time, so a slow/failed LLM call never blocks
+    # homework_autogen.py's auto-generation transaction. insight_generated_at
+    # is the cache marker: null means "not generated yet, fall back to a
+    # generic placeholder and try again next request."
+    insight_what_needs_understanding: Mapped[str | None] = mapped_column(Text, nullable=True)
+    insight_references: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    insight_key_idea_title: Mapped[str | None] = mapped_column(Text, nullable=True)
+    insight_key_idea_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    insight_connection_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    insight_generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class HomeworkDataset(Base):

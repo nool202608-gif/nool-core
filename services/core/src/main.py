@@ -18,21 +18,21 @@ from src.api.routes import (
     curriculum,
     custom_question,
     dataset,
+    gamification,
     health,
     homework,
-    improvement,
+    journey,
     leaderboard,
+    practice_bank,
     profile,
     progress,
     question_paper,
     ready,
-    retest_progress,
     roster,
     school_admin,
     school_oversight,
     student_dashboard,
     student_homework,
-    student_retest,
     support_ticket,
     teacher_dashboard,
     test_result,
@@ -81,8 +81,6 @@ def create_app() -> FastAPI:
     app.include_router(voice_test.router)
     app.include_router(test_result.router)
     app.include_router(homework.router)
-    app.include_router(retest_progress.router)
-    app.include_router(improvement.router)
     app.include_router(question_paper.router)
     app.include_router(teacher_dashboard.router)
     app.include_router(assistant.router)
@@ -91,10 +89,12 @@ def create_app() -> FastAPI:
     app.include_router(assigned_test.router)
     app.include_router(ai_assessor.router)
     app.include_router(student_homework.router)
-    app.include_router(student_retest.router)
+    app.include_router(practice_bank.router)
     app.include_router(bloom_result.router)
     app.include_router(progress.router)
     app.include_router(leaderboard.router)
+    app.include_router(gamification.router)
+    app.include_router(journey.router)
     # Super Admin / School Admin
     app.include_router(admin.router)
     app.include_router(admin_catalog.router)

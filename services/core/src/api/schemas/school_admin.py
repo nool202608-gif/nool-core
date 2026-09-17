@@ -263,6 +263,11 @@ class SchoolDatasetOut(CamelModel):
     question_count: int
     description: str
     enabled: bool
+    # See Dataset.restricted's docstring - surfaced here so a School Admin
+    # can tell a school-exclusive dataset (e.g. one meant only for this
+    # school) apart from the shared default catalog when deciding what to
+    # toggle on.
+    restricted: bool
 
 
 class UpdateSchoolDatasetsIn(CamelModel):

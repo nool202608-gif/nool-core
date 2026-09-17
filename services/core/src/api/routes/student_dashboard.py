@@ -67,11 +67,15 @@ async def get_student_dashboard(
 ) -> StudentDashboardOut:
     streak = await _learning_streak(session, user.id)
 
+    # Excludes a Test the student has already completed - see
+    # assigned_test.py's list_my_tests for the same fix and the same
+    # reasoning (a finished Test used to never leave this "pending" list).
+    already_done = select(StudentTestResult.test_id).where(StudentTestResult.student_id == user.id)
     pending_tests = await session.execute(
         select(VoiceTest, Subject)
         .join(VoiceTestTargetStudent, VoiceTestTargetStudent.test_id == VoiceTest.id)
         .join(Subject, Subject.id == VoiceTest.subject_id)
-        .where(VoiceTestTargetStudent.student_id == user.id)
+        .where(VoiceTestTargetStudent.student_id == user.id, VoiceTest.id.not_in(already_done))
         .limit(3)
     )
     subject_today = [

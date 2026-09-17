@@ -21,6 +21,9 @@ from src.api.schemas.question_paper import (
     UpdateQuestionPaperQuestionIn,
 )
 from src.domain.models import (
+    Chapter,
+    Dataset,
+    DatasetType,
     Feature,
     QuestionPaper,
     QuestionPaperBloomDistribution,
@@ -34,12 +37,14 @@ from src.domain.models import (
     QuestionPaperValidation,
     Role,
     School,
+    Subject,
+    Topic,
     User,
 )
 from src.repositories.subscription_repository import get_active_plan
 from src.repositories.usage_repository import count_question_papers
+from src.services import kg_client
 from src.services.bloom_defaults import resolve_bloom_targets
-from src.services.content_generator import get_content_generator
 
 router = APIRouter(prefix="/api/v1", tags=["question-papers"])
 
@@ -255,6 +260,100 @@ async def update_paper(
     return await _serialize(session, paper)
 
 
+async def _resolve_kg_scope(session: AsyncSession, paper: QuestionPaper) -> tuple[list[dict], list[str]]:
+    """Resolves this paper's selected chapters/topics into what kg_client
+    needs: chapters by (KG chapter number, name) and topic titles to filter
+    to. A chapter only selected implicitly (via a topic under it, with no
+    explicit QuestionPaperChapter row) is still included - the KG needs its
+    number to scope the query regardless of how the blueprint UI expressed it.
+
+    Chapters with no `order_index` (never synced from the KG - see
+    POST /admin/curriculum/sync-from-kg) have no KG-side number to match on
+    and are skipped: there's nothing grounded to generate for them yet.
+    """
+    chapter_ids = (
+        (await session.execute(select(QuestionPaperChapter.chapter_id).where(QuestionPaperChapter.paper_id == paper.id)))
+        .scalars()
+        .all()
+    )
+    topic_rows = (
+        (
+            await session.execute(
+                select(Topic).join(QuestionPaperTopic, QuestionPaperTopic.topic_id == Topic.id).where(
+                    QuestionPaperTopic.paper_id == paper.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    all_chapter_ids = set(chapter_ids) | {t.chapter_id for t in topic_rows}
+    if not all_chapter_ids:
+        return [], []
+
+    chapters = (
+        (await session.execute(select(Chapter).where(Chapter.id.in_(all_chapter_ids))))
+        .scalars()
+        .all()
+    )
+    chapter_refs = [
+        {"number": c.order_index, "name": c.name} for c in chapters if c.order_index is not None
+    ]
+    topic_names = [t.name for t in topic_rows]
+    return chapter_refs, topic_names
+
+
+async def _paper_kg_identity(session: AsyncSession, paper: QuestionPaper) -> tuple[str, str, int]:
+    """(subject name, board, grade) - what the kg service needs to know
+    *which* Curriculum root to query. Without these, the kg service
+    silently falls back to its own defaults (CBSE/Grade 10/Science)
+    regardless of what this paper is actually for - see kg_client.py's
+    docstring.
+
+    Prefers the paper's linked Dataset when one names a real KG root: a
+    PRIMARY_CONTENT Dataset (e.g. "10th Science") *is* that root - see
+    Dataset's/DatasetType's docstrings - so if the paper shares from one
+    that has both board and grade set, that dataset is the authoritative
+    answer, not the paper's own (denormalized-at-creation) board/grade. A
+    QA-type dataset share (a hand-curated question bank) is never treated
+    as a KG root, even if it happens to have board/grade set. Falls back
+    to the paper's own fields when there's no qualifying dataset share.
+    """
+    share_result = await session.execute(
+        select(Dataset)
+        .join(QuestionPaperDatasetShare, QuestionPaperDatasetShare.dataset_id == Dataset.id)
+        .where(QuestionPaperDatasetShare.paper_id == paper.id)
+        .order_by(QuestionPaperDatasetShare.percent.desc())
+    )
+    for dataset in share_result.scalars().all():
+        if dataset.type == DatasetType.PRIMARY_CONTENT and dataset.board is not None and dataset.grade is not None:
+            subject_id = dataset.subject_id or paper.subject_id
+            subject = await session.get(Subject, subject_id)
+            subject_name = subject.name if subject is not None else "Science"
+            return subject_name, dataset.board, dataset.grade
+
+    subject = await session.get(Subject, paper.subject_id)
+    subject_name = subject.name if subject is not None else "Science"
+    return subject_name, paper.board, paper.grade
+
+
+def _assign_marks(paper: QuestionPaper, sections: list[QuestionPaperSection], question_count: int) -> list[int]:
+    """Real per-question marks, replacing the old hardcoded `marks=1`:
+    follow the paper's own QuestionPaperSections (marks_each per slot) if
+    it has any, else spread total_marks as evenly as the count allows.
+    """
+    marks_sequence = [s.marks_each for s in sections for _ in range(s.question_count)]
+    if not marks_sequence:
+        total_marks = paper.total_marks or question_count or 1
+        n = max(question_count, 1)
+        base, remainder = divmod(total_marks, n)
+        marks_sequence = [base + (1 if i < remainder else 0) for i in range(n)]
+    if len(marks_sequence) < question_count:
+        pad_value = marks_sequence[-1] if marks_sequence else 1
+        marks_sequence = marks_sequence + [pad_value] * (question_count - len(marks_sequence))
+    return marks_sequence[:question_count]
+
+
 @router.post("/question-papers/{paper_id}/generate")
 async def generate_paper(
     paper_id: str,
@@ -267,13 +366,38 @@ async def generate_paper(
     bloom_dist = await session.execute(
         select(QuestionPaperBloomDistribution).where(QuestionPaperBloomDistribution.paper_id == paper.id)
     )
-    bloom_levels = [d.bloom_level for d in bloom_dist.scalars().all()]
-    target_count = paper.total_marks or 10
+    bloom_distribution = {d.bloom_level.value: d.value for d in bloom_dist.scalars().all()}
 
-    generator = get_content_generator()
-    questions = generator.generate_questions(
-        topic=paper.name, bloom_levels=bloom_levels, count=target_count
+    difficulty_dist = await session.execute(
+        select(QuestionPaperDifficultyDistribution).where(
+            QuestionPaperDifficultyDistribution.paper_id == paper.id
+        )
     )
+    difficulty_distribution = {d.level.value: d.value for d in difficulty_dist.scalars().all()}
+
+    sections_result = await session.execute(
+        select(QuestionPaperSection).where(QuestionPaperSection.paper_id == paper.id)
+    )
+    sections = list(sections_result.scalars().all())
+    target_count = sum(s.question_count for s in sections) if sections else (paper.total_marks or 10)
+
+    chapter_refs, topic_names = await _resolve_kg_scope(session, paper)
+    requested_chapter_numbers = {c["number"] for c in chapter_refs}
+
+    questions: list[dict] = []
+    if chapter_refs:
+        subject_name, board, grade = await _paper_kg_identity(session, paper)
+        questions = await kg_client.generate_paper_questions(
+            subject=subject_name,
+            board=board,
+            grade=grade,
+            chapters=chapter_refs,
+            topic_names=topic_names,
+            bloom_distribution=bloom_distribution,
+            difficulty_distribution=difficulty_distribution,
+            question_types=paper.question_types or [],
+            total_questions=target_count,
+        )
 
     existing = await session.execute(
         select(QuestionPaperQuestion).where(QuestionPaperQuestion.paper_id == paper.id)
@@ -282,10 +406,11 @@ async def generate_paper(
         await session.delete(row)
     await session.flush()
 
-    for order, q in enumerate(questions, start=1):
+    marks_sequence = _assign_marks(paper, sections, len(questions))
+    for order, (q, marks) in enumerate(zip(questions, marks_sequence), start=1):
         session.add(
             QuestionPaperQuestion(
-                paper_id=paper.id, order=order, bloom_level=q.bloom_level, marks=1, text=q.text
+                paper_id=paper.id, order=order, bloom_level=q["bloom_level"], marks=marks, text=q["text"]
             )
         )
 
@@ -293,15 +418,37 @@ async def generate_paper(
         select(QuestionPaperValidation).where(QuestionPaperValidation.paper_id == paper.id)
     )
     validation = existing_validation.scalar_one_or_none()
-    coverage_percent = 100 if questions else 0
-    issues: list[str] = [] if questions else ["No questions could be generated for this configuration."]
+
+    covered_chapters = {q["chapter_number"] for q in questions}
+    coverage_percent = (
+        round(100 * len(covered_chapters & requested_chapter_numbers) / len(requested_chapter_numbers))
+        if requested_chapter_numbers
+        else (100 if questions else 0)
+    )
+    texts = [q["text"].strip().lower() for q in questions]
+    duplicate_count = len(texts) - len(set(texts))
+    quality_percent = max(0, 100 - duplicate_count * 20) if questions else 0
+    quality_percent = min(quality_percent, coverage_percent) if questions else 0
+
+    issues: list[str] = []
+    if not questions:
+        issues.append(
+            "No questions could be generated for this configuration."
+            if chapter_refs
+            else "No chapters/topics with knowledge-graph content are selected on this paper."
+        )
+    if duplicate_count:
+        issues.append(f"{duplicate_count} duplicate question(s) were generated.")
+    if requested_chapter_numbers and coverage_percent < 100:
+        issues.append("Not every selected chapter/topic produced questions.")
+
     if validation is None:
         validation = QuestionPaperValidation(paper_id=paper.id)
         session.add(validation)
     validation.coverage_percent = coverage_percent
-    validation.marks_accounted_for = len(questions)
-    validation.duplicate_count = 0
-    validation.quality_percent = 100 if questions else 0
+    validation.marks_accounted_for = sum(marks_sequence[: len(questions)])
+    validation.duplicate_count = duplicate_count
+    validation.quality_percent = quality_percent
     validation.issues = issues
 
     paper.status = QuestionPaperStatus.REVIEW if questions else QuestionPaperStatus.VALIDATION_FAILED
@@ -381,13 +528,23 @@ async def get_question_candidates(
     if question is None:
         raise NotFoundError(f'No question "{question_id}" on this paper.')
 
-    generator = get_content_generator()
-    candidates = generator.generate_replacement_candidates(
-        topic=paper.name, bloom_level=question.bloom_level, exclude_text=question.text, count=3
-    )
+    chapter_refs, topic_names = await _resolve_kg_scope(session, paper)
+    candidates: list[dict] = []
+    if chapter_refs:
+        subject_name, board, grade = await _paper_kg_identity(session, paper)
+        candidates = await kg_client.generate_replacement_candidates(
+            subject=subject_name,
+            board=board,
+            grade=grade,
+            chapters=chapter_refs,
+            topic_names=topic_names,
+            bloom_level=question.bloom_level.value,
+            exclude_text=question.text,
+            count=3,
+        )
     items = [
-        QuestionPaperQuestionCandidateOut(id=f"{question_id}-alt-{i + 1}", text=text)
-        for i, text in enumerate(candidates)
+        QuestionPaperQuestionCandidateOut(id=f"{question_id}-alt-{i + 1}", text=c["text"])
+        for i, c in enumerate(candidates)
     ]
     return ListEnvelope(items=items, total=len(items))
 

@@ -1,4 +1,7 @@
-from fastapi import APIRouter, Depends
+import logging
+import uuid
+
+from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -10,20 +13,28 @@ from src.api.schemas.roster import AssignmentTarget
 from src.api.schemas.voice_test import CreateTestIn, VoiceTestOut
 from src.domain.models import (
     AssignmentTargetMode,
+    Chapter,
     Feature,
     Role,
+    School,
     SchoolClass,
     StudentProfile,
+    Subject,
     TestStatus,
+    Topic,
     User,
     VoiceTest,
     VoiceTestBloomLevel,
     VoiceTestTargetStudent,
 )
+from src.repositories import get_session
 from src.repositories.lookups import get_test_in_school
 from src.repositories.roster_repository import teaches_class_subject
 from src.repositories.subscription_repository import get_active_plan
 from src.repositories.usage_repository import count_tests
+from src.services import kg_client
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["voice-tests"])
 
@@ -58,6 +69,66 @@ async def _serialize(session: AsyncSession, test: VoiceTest) -> VoiceTestOut:
     )
 
 
+async def _generate_reference_content(
+    session: AsyncSession, test: VoiceTest, bloom_levels: list[str]
+) -> None:
+    """Grounds this Test's colearner session in real curriculum content -
+    see kg's services/kg/src/api/routes/voice_test.py:generate. Deliberately
+    swallows any failure (KG service down, no OPENAI_API_KEY there, chapter
+    never synced from KG) rather than blocking test creation on it: a
+    missing reference_questions/textbook_context just means the AI Assessor
+    session falls back to colearner's own generic defaults (see
+    services/colearner/src/services/chained_service.py's DEFAULT_CONTEXT).
+    """
+    chapter = await session.get(Chapter, test.chapter_id)
+    if chapter is None or chapter.order_index is None:
+        return  # Never synced from KG (see Chapter.order_index's docstring) - nothing to ground against.
+
+    subject = await session.get(Subject, test.subject_id)
+    school_class = await session.get(SchoolClass, test.class_id)
+    school = await session.get(School, school_class.school_id) if school_class else None
+    topic = await session.get(Topic, test.topic_id) if test.topic_id else None
+    if subject is None or school_class is None or school is None:
+        return
+
+    try:
+        result = await kg_client.generate_assessor_content(
+            subject=subject.name,
+            board=school.board,
+            grade=school_class.grade,
+            chapters=[{"number": chapter.order_index, "name": chapter.name}],
+            topic_names=[topic.name] if topic else [],
+            bloom_levels=bloom_levels,
+            num_questions=max(len(bloom_levels), 2),
+        )
+    except Exception:
+        logger.warning("voice_test_reference_content_generation_failed", extra={"test_id": str(test.id)})
+        return
+
+    test.reference_questions = result.get("reference_questions") or None
+    test.textbook_context = result.get("textbook_context") or None
+    await session.commit()
+
+
+async def _generate_reference_content_in_background(test_id: uuid.UUID, bloom_levels: list[str]) -> None:
+    """FastAPI BackgroundTasks entrypoint - runs after create_test's response
+    has already been sent (see its `background_tasks.add_task(...)` call).
+
+    A grounded generation call to kg (a real OpenAI call) reliably takes
+    10-25s - previously awaited inline before create_test returned, which
+    routinely blew past nool-apps' apiClient.ts's 10s REQUEST_TIMEOUT_MS,
+    so the app showed test creation as failed/hung even though Core went on
+    to create the test successfully a few seconds later. Opens its own
+    session via get_session() rather than reusing create_test's - that one
+    is closed by the time this runs, well after the response.
+    """
+    async with get_session() as session:
+        test = await session.get(VoiceTest, test_id)
+        if test is None:
+            return  # Deleted/unreachable between request and background run - nothing to ground.
+        await _generate_reference_content(session, test, bloom_levels)
+
+
 @router.get("/tests")
 async def list_tests(
     user: User = Depends(require_role(Role.TEACHER)),
@@ -88,6 +159,7 @@ async def get_test(
 @router.post("/tests", status_code=201, summary="Create a Test (DRAFT)")
 async def create_test(
     body: CreateTestIn,
+    background_tasks: BackgroundTasks,
     user: User = Depends(require_role(Role.TEACHER)),
     _feature: User = Depends(require_feature(Feature.VOICE_TEST)),
     session: AsyncSession = Depends(get_db_session),
@@ -141,6 +213,17 @@ async def create_test(
 
     await session.commit()
     await session.refresh(test)
+
+    # Grounding the colearner session in real curriculum content is a real
+    # LLM call (10-25s) - runs after this response is sent, not before, so
+    # "Create" doesn't sit there for that long (see
+    # _generate_reference_content_in_background's docstring). The test is
+    # immediately usable either way; reference_questions/textbook_context
+    # just fill in a few seconds later if generation succeeds.
+    background_tasks.add_task(
+        _generate_reference_content_in_background, test.id, [level.value for level in body.bloom_levels]
+    )
+
     return await _serialize(session, test)
 
 

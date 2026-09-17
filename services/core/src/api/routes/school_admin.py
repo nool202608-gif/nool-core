@@ -71,7 +71,6 @@ from src.domain.models import (
     QuestionPaper,
     ReportConfiguration,
     ReportShare,
-    RetestAttempt,
     Role,
     School,
     SchoolClass,
@@ -744,8 +743,8 @@ async def delete_student(
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, bool]:
     """Same idempotent/blocked-up-front shape as delete_teacher - real
-    activity (test results, homework progress, retest attempts, leaderboard
-    points) blocks the delete rather than being cascaded away.
+    activity (test results, homework progress, leaderboard points) blocks
+    the delete rather than being cascaded away.
     """
     result = await session.execute(
         select(User, StudentProfile)
@@ -760,7 +759,6 @@ async def delete_student(
     has_activity = (
         await _row_exists(session, StudentTestResult.student_id, student_user.id)
         or await _row_exists(session, StudentHomeworkProgress.student_id, student_user.id)
-        or await _row_exists(session, RetestAttempt.student_id, student_user.id)
         or await _row_exists(session, StudentPoints.student_id, student_user.id)
         or await _row_exists(session, VoiceTestTargetStudent.student_id, student_user.id)
     )
@@ -1189,6 +1187,7 @@ async def get_school_datasets(
             question_count=d.question_count,
             description=d.description,
             enabled=d.id in enabled_ids,
+            restricted=d.restricted,
         )
         for d in datasets
     ]

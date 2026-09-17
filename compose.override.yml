@@ -26,3 +26,18 @@ services:
       # for the OpenAPI/Swagger UI. Same app the NGINX /api/ route
       # forwards to; both work.
       - "${CORE_PORT_HOST:-8002}:8000"
+
+  kg:
+    ports:
+      # Direct access - not routed through NGINX at all (see nginx/conf.d/
+      # default.conf - only /auth/ and /api/ are proxied). Core reaches it
+      # over the Compose network at http://kg:8000; this is only for
+      # hitting its own /docs directly from the host.
+      - "${KG_PORT_HOST:-8003}:8000"
+
+  colearner:
+    ports:
+      # Direct access, bypassing NGINX - e.g. http://localhost:8004/docs
+      # for the OpenAPI/Swagger UI. Same app the NGINX /api/v1/colearner/
+      # route forwards to; both work.
+      - "${COLEARNER_PORT_HOST:-8004}:8000"

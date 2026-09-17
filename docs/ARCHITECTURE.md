@@ -23,8 +23,10 @@ separate repositories that talk to this stack over HTTP.
 
 ### NGINX
 
-The external HTTP entry point. Routes `/auth/*` to the Auth service and
-`/api/*` to the Core service, forwards/generates `X-Request-ID`, sets CORS
+The external HTTP entry point. Routes `/auth/*` to the Auth service,
+`/api/v1/colearner/*` to the Colearner service (a more specific prefix than
+`/api/`, so it does not fall through to Core), and everything else under
+`/api/*` to the Core service. Forwards/generates `X-Request-ID`, sets CORS
 headers, and enforces request size limits. Contains no business or
 authentication logic - see `nginx/`.
 
@@ -44,11 +46,25 @@ password auth and never stores passwords. See `services/auth/README.md`.
 ### Core Service
 
 Owns the product domain: Schools, Teachers, Students, Classes, Curriculum,
-Voice Tests, Test Results, Homework, Retests, Improvement, Question Papers,
+Voice Tests, Test Results, Homework, Journey, Practice Bank, Question Papers,
 Dashboards, Assistant, AI Assessor sessions, Leaderboard, and the Super
 Admin / School Admin surfaces - the full contract nool-app's
 `spec/docs/api-reference.html` defines. See `services/core/README.md` for
 the schema/route/authorization architecture.
+
+### Colearner Service
+
+Turn-based voice Bloom's Taxonomy oral co-learner, ported from the
+`nool-research` prototype. Two pipelines, each with a model fixed in code
+rather than client-selectable - see `services/colearner/README.md`:
+
+```
+nool-app -> NGINX -> Colearner Service -> OpenAI / Gemini / Edge-TTS
+```
+
+Firebase-authenticated like Auth/Core (same `shared/auth` seam). Sessions
+are in-memory only (no Postgres/Redis) - a known v1 limitation, not a
+gap; see the service's own README for why.
 
 ### PostgreSQL
 

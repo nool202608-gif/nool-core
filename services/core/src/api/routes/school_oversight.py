@@ -1,9 +1,9 @@
 """Read-only, school-wide oversight for School Admin - Voice Tests,
-Homework, Question Papers, Retest Progress, Improvement, and a school-wide
-Leaderboard, none of which had any school-scoped view before this (every
-one of the underlying resources was Teacher-only, or Student-only for the
-leaderboard). School Admin never creates/edits this content - only
-observes it - so every route here is a GET.
+Homework, Question Papers, and a school-wide Leaderboard, none of which
+had any school-scoped view before this (every one of the underlying
+resources was Teacher-only, or Student-only for the leaderboard). School
+Admin never creates/edits this content - only observes it - so every
+route here is a GET.
 """
 
 from uuid import UUID
@@ -19,11 +19,9 @@ from datetime import datetime, timezone
 from src.api.schemas.school_oversight import (
     SchoolAuditLogEntryOut,
     SchoolHomeworkOut,
-    SchoolImprovementOut,
     SchoolLeaderboardEntryOut,
     SchoolQuestionBankEntryOut,
     SchoolQuestionPaperOut,
-    SchoolRetestProgressOut,
     SchoolVoiceTestOut,
 )
 from src.domain.models import (
@@ -35,12 +33,10 @@ from src.domain.models import (
     QuestionPaper,
     QuestionPaperQuestion,
     QuestionPaperTopic,
-    RetestAttempt,
     Role,
     SchoolClass,
     StudentPoints,
     StudentProfile,
-    StudentRetestStatus,
     Subject,
     TeacherClassAssignment,
     Topic,
@@ -210,93 +206,6 @@ async def list_school_question_papers(
         )
         for paper, subject, creator in rows
     ]
-    return ListEnvelope(items=items, total=total)
-
-
-@router.get("/retest-progress")
-async def list_school_retest_progress(
-    class_id: str | None = Query(default=None, alias="classId"),
-    limit: int = 50,
-    offset: int = 0,
-    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
-    session: AsyncSession = Depends(get_db_session),
-) -> ListEnvelope[SchoolRetestProgressOut]:
-    base = (
-        select(Homework, SchoolClass)
-        .join(SchoolClass, SchoolClass.id == Homework.class_id)
-        .where(SchoolClass.school_id == user.school_id)
-    )
-    if class_id is not None:
-        base = base.where(Homework.class_id == class_id)
-
-    total = (await session.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
-    rows = (await session.execute(base.limit(limit).offset(offset))).all()
-
-    items = []
-    for hw, school_class in rows:
-        attempts = (
-            await session.execute(select(RetestAttempt).where(RetestAttempt.homework_id == hw.id))
-        ).scalars().all()
-        completed = [a for a in attempts if a.status == StudentRetestStatus.COMPLETED]
-        in_progress = [a for a in attempts if a.status == StudentRetestStatus.IN_PROGRESS]
-        not_started = [a for a in attempts if a.status == StudentRetestStatus.ASSIGNED]
-        items.append(
-            SchoolRetestProgressOut(
-                homework_id=str(hw.id),
-                class_label=_class_label(school_class),
-                gap_topic=hw.gap_topic,
-                assigned_count=hw.assigned_count,
-                completed_count=len(completed),
-                in_progress_count=len(in_progress),
-                not_started_count=len(not_started),
-            )
-        )
-    return ListEnvelope(items=items, total=total)
-
-
-@router.get("/improvement")
-async def list_school_improvement(
-    class_id: str | None = Query(default=None, alias="classId"),
-    limit: int = 50,
-    offset: int = 0,
-    user: User = Depends(require_role(Role.SCHOOL_ADMIN)),
-    session: AsyncSession = Depends(get_db_session),
-) -> ListEnvelope[SchoolImprovementOut]:
-    base = (
-        select(Homework, SchoolClass, VoiceTest.id.label("test_id"))
-        .join(SchoolClass, SchoolClass.id == Homework.class_id)
-        .join(VoiceTest, VoiceTest.id == Homework.test_id)
-        .where(SchoolClass.school_id == user.school_id)
-    )
-    if class_id is not None:
-        base = base.where(Homework.class_id == class_id)
-
-    total = (await session.execute(select(func.count()).select_from(base.subquery()))).scalar_one()
-    rows = (await session.execute(base.limit(limit).offset(offset))).all()
-
-    items = []
-    for hw, school_class, test_id in rows:
-        attempts = (
-            await session.execute(select(RetestAttempt).where(RetestAttempt.homework_id == hw.id))
-        ).scalars().all()
-        completed = [a for a in attempts if a.status == StudentRetestStatus.RESULT_READY]
-        baseline_vals = [a.baseline_percent for a in completed if a.baseline_percent is not None]
-        retest_vals = [a.retest_percent for a in completed if a.retest_percent is not None]
-        baseline_percent = round(sum(baseline_vals) / len(baseline_vals)) if baseline_vals else 0
-        retest_percent = round(sum(retest_vals) / len(retest_vals)) if retest_vals else 0
-        items.append(
-            SchoolImprovementOut(
-                test_id=str(test_id),
-                homework_id=str(hw.id),
-                class_label=_class_label(school_class),
-                gap_topic=hw.gap_topic,
-                baseline_percent=baseline_percent,
-                retest_percent=retest_percent,
-                improvement_percent=retest_percent - baseline_percent,
-                assigned_count=hw.assigned_count,
-                retested_count=len(completed),
-            )
-        )
     return ListEnvelope(items=items, total=total)
 
 

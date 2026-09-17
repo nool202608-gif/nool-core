@@ -10,6 +10,8 @@ class ChapterOut(CamelModel):
     id: str
     subject_id: str
     name: str
+    # Null means "applies to any grade" - see Chapter.grade's docstring.
+    grade: int | None = None
 
 
 class TopicOut(CamelModel):

@@ -1,7 +1,7 @@
-"""School-scoped "get or 404" lookups shared across route modules - e.g.
-retest_progress.py and improvement.py both need "this Homework, but only
-if it's in the caller's school," exactly like homework.py's own routes do.
-Factored out here rather than imported across route modules directly.
+"""School-scoped "get or 404" lookups shared across route modules -
+homework.py and voice_test.py both need "this row, but only if it's in
+the caller's school." Factored out here rather than duplicated across
+route modules.
 """
 
 from uuid import UUID

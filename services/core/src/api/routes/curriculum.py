@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.deps import get_db_session, require_role
@@ -59,8 +59,16 @@ async def list_subjects_for_class(
     only scopes to the school. Scopes the Voice Test wizard's Subject
     step once a class has been chosen. An empty result is a legitimate
     outcome, not an error.
+
+    Also narrowed to the school's currently-enabled subjects
+    (school_curriculum), same discipline as GET /subjects above - a
+    TeacherClassAssignment row is a separate table from school_curriculum,
+    so nothing stops it from going stale (or being wrong from the start):
+    a subject the school has since disabled, or was never really supposed
+    to be assigned, must not keep surfacing here just because the
+    assignment row still points at it.
     """
-    result = await session.execute(
+    assigned = await session.execute(
         select(Subject)
         .join(TeacherClassAssignment, TeacherClassAssignment.subject_id == Subject.id)
         .where(
@@ -69,18 +77,54 @@ async def list_subjects_for_class(
         )
         .distinct()
     )
-    items = [SubjectOut(id=str(s.id), name=s.name) for s in result.scalars().all()]
+    assigned_subjects = list(assigned.scalars().all())
+    if not assigned_subjects:
+        return ListEnvelope(items=[], total=0)
+
+    has_any_config = await session.execute(
+        select(SchoolCurriculum.id).where(SchoolCurriculum.school_id == user.school_id).limit(1)
+    )
+    if has_any_config.scalar_one_or_none() is None:
+        # Not configured yet - same "don't look like explicitly enabled
+        # nothing" rule as GET /subjects.
+        items = [SubjectOut(id=str(s.id), name=s.name) for s in assigned_subjects]
+        return ListEnvelope(items=items, total=len(items))
+
+    enabled = await session.execute(
+        select(SchoolCurriculum.subject_id).where(
+            SchoolCurriculum.school_id == user.school_id, SchoolCurriculum.enabled.is_(True)
+        )
+    )
+    enabled_ids = {row[0] for row in enabled.all()}
+    items = [SubjectOut(id=str(s.id), name=s.name) for s in assigned_subjects if s.id in enabled_ids]
     return ListEnvelope(items=items, total=len(items))
 
 
 @router.get("/subjects/{subject_id}/chapters")
 async def list_chapters(
     subject_id: str,
+    grade: int | None = None,
     user: User = Depends(require_role(Role.TEACHER, Role.SCHOOL_ADMIN)),
     session: AsyncSession = Depends(get_db_session),
 ) -> ListEnvelope[ChapterOut]:
-    result = await session.execute(select(Chapter).where(Chapter.subject_id == subject_id))
-    items = [ChapterOut(id=str(c.id), subject_id=subject_id, name=c.name) for c in result.scalars().all()]
+    """`grade` is optional so existing callers keep working unfiltered -
+    but every caller that already knows the class's grade (Voice Test/
+    Question Paper setup, both scoped to a class before this step) should
+    pass it: Subject is deliberately grade-agnostic (e.g. one "Science" row
+    spans 9th and 10th), so without this a chapter ingested for one grade
+    (Chapter.grade) shows up identically for every other grade sharing the
+    same subject. A chapter with no grade set (NULL - every one that
+    predates this column) always matches, grade filter or not - it's
+    "applies to any grade," not "belongs to no grade."
+    """
+    conditions = [Chapter.subject_id == subject_id]
+    if grade is not None:
+        conditions.append(or_(Chapter.grade == grade, Chapter.grade.is_(None)))
+    result = await session.execute(select(Chapter).where(*conditions))
+    items = [
+        ChapterOut(id=str(c.id), subject_id=subject_id, name=c.name, grade=c.grade)
+        for c in result.scalars().all()
+    ]
     return ListEnvelope(items=items, total=len(items))
 
 
